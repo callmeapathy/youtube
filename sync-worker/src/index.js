@@ -1,30 +1,15 @@
-/**
- * Щоденний синк статистики каналів з YouTube Data API.
- *
- * ВАЖЛИВО про квоту: у YouTube Data API денна квота 10 000 юнитів.
- * channels.list коштує 1 юніт за запит (до 50 ID за раз) — дешево.
- * search.list коштує 100 юнитів за запит — дорого. Тому "середні перегляди
- * за місяць" тут рахуються ЧЕСНО (через видео за останні 30 днів), але
- * лише для обмеженої кількості каналів за один прогін (BATCH_LIMIT),
- * щоб не спалити всю денну квоту одним запуском.
- *
- * Цей воркер лише ОНОВЛЮЄ канали, які вже є в D1 (додані вручну через
- * POST /api/channels або через seed.sql). Пошук нових каналів — окрема
- * задача, яку додамо, коли визначимось із джерелом (Google Ads placement
- * report / Google Sheet).
- */
+import Papa from 'papaparse';
 
-const BATCH_LIMIT = 40; // скільки каналів оновлювати за один запуск cron
+const BATCH_LIMIT = 40; // Сколько каналов обогащать метриками YouTube за один раз
 
 export default {
   async fetch(request, env) {
-    // Ручний запуск для тестування: GET /run
     const url = new URL(request.url);
     if (url.pathname === "/run") {
       const result = await syncChannels(env);
       return Response.json(result);
     }
-    return new Response("YT Placements sync worker. POST /run to trigger manually.", { status: 200 });
+    return new Response("YT Placements sync worker. GET /run to trigger manually.", { status: 200 });
   },
 
   async scheduled(event, env, ctx) {
@@ -33,21 +18,63 @@ export default {
 };
 
 async function syncChannels(env) {
+  const result = {
+    sheetsImported: 0,
+    ytUpdated: 0,
+    errors: []
+  };
+
+  // -------------------------------------------------------------
+  // ЭТАП 1: Загрузка / Пополнение базы из Google Sheets
+  // -------------------------------------------------------------
+  if (env.GOOGLE_SHEET_CSV_URL) {
+    try {
+      const sheetRes = await fetch(env.GOOGLE_SHEET_CSV_URL);
+      const csvText = await sheetRes.text();
+
+      const { data: rows } = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true
+      });
+
+      for (const row of rows) {
+        // Достаем ссылку и название из колонок твоего файла
+        const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'];
+        const exceptionTitle = row['Виключення'] || '';
+
+        if (!rawUrl) continue;
+
+        const channelId = parseChannelId(rawUrl);
+        if (!channelId) continue;
+
+        // Делаем UPSERT в таблицу channels
+        await env.DB.prepare(`
+          INSERT INTO channels (id, title, status, source, created_at, updated_at)
+          VALUES (?, ?, 'black', 'sheet_import', datetime('now'), datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            title = CASE WHEN channels.title IS NULL OR channels.title = '' THEN excluded.title ELSE channels.title END,
+            updated_at = datetime('now')
+        `).bind(channelId, exceptionTitle).run();
+
+        result.sheetsImported++;
+      }
+    } catch (e) {
+      result.errors.push({ step: "google_sheets_import", error: String(e) });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // ЭТАП 2: Синк метрик с YouTube API (для старых записей)
+  // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
-    return { error: "YOUTUBE_API_KEY secret is not set" };
+    result.errors.push({ step: "youtube_sync", error: "YOUTUBE_API_KEY secret is not set" });
+    return result;
   }
 
   const { results: staleChannels } = await env.DB.prepare(
     `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
   ).bind(BATCH_LIMIT).all();
-
-  if (!staleChannels.length) {
-    return { updated: 0, message: "no channels in DB yet — seed some first" };
-  }
-
-  let updated = 0;
-  const errors = [];
 
   for (const { id } of staleChannels) {
     try {
@@ -56,21 +83,27 @@ async function syncChannels(env) {
 
       await env.DB.prepare(`
         UPDATE channels
-        SET subscribers = ?, avg_views_month = ?, videos_month = ?, updated_at = datetime('now')
+        SET subscribers = ?, avg_views_m = ?, videos_mth = ?, updated_at = datetime('now')
         WHERE id = ?
       `).bind(stats.subscribers, stats.avgViewsMonth, stats.videosMonth, id).run();
 
-      updated++;
+      result.ytUpdated++;
     } catch (e) {
-      errors.push({ id, error: String(e) });
+      result.errors.push({ step: "youtube_sync", id, error: String(e) });
     }
   }
 
-  return { updated, total: staleChannels.length, errors };
+  return result;
 }
 
+// Извлечение ID канала из ссылки youtube.com/channel/UC...
+function parseChannelId(url) {
+  const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
+  return match ? match[1] : null;
+}
+
+// Запрос статистики канала из YouTube API v3
 async function fetchChannelStats(channelId, apiKey) {
-  // 1 юніт: базова статистика каналу
   const chRes = await fetch(
     `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelId}&key=${apiKey}`
   );
@@ -80,7 +113,6 @@ async function fetchChannelStats(channelId, apiKey) {
 
   const subscribers = Number(channel.statistics?.subscriberCount || 0);
 
-  // 100 юнитів: пошук відео за останні 30 днів (найдорожча частина)
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const searchRes = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
@@ -93,7 +125,6 @@ async function fetchChannelStats(channelId, apiKey) {
     return { subscribers, avgViewsMonth: 0, videosMonth: 0 };
   }
 
-  // 1 юніт: перегляди по знайдених відео
   const videosRes = await fetch(
     `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds.join(",")}&key=${apiKey}`
   );
