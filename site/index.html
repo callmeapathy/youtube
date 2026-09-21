@@ -5,53 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YT Placements — Каталог YouTube-каналів</title>
   <link rel="stylesheet" href="style.css" />
-  <style>
-    /* Стилізація інтерактивного вибору зірочок */
-    .star-rating-select {
-      display: inline-flex;
-      gap: 2px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .star-rating-select span {
-      color: #4a4a4a;
-      transition: color 0.15s ease, transform 0.1s ease;
-      font-size: 1.1em;
-    }
-    .star-rating-select span.active {
-      color: #ffb400;
-    }
-    .star-rating-select:hover span {
-      color: #ffb400;
-    }
-    .star-rating-select span:hover ~ span {
-      color: #4a4a4a;
-    }
-    .star-rating-select span:active {
-      transform: scale(1.2);
-    }
-
-    /* Стилізація кастомного дропдауну статусу під загальний темний дизайн */
-    .status-select-dropdown {
-      background: #1a1a1a;
-      color: #fff;
-      border: 1px solid #333;
-      border-radius: 6px;
-      padding: 4px 8px;
-      font-size: 0.85em;
-      cursor: pointer;
-      outline: none;
-      transition: border-color 0.2s, background 0.2s;
-    }
-    .status-select-dropdown:hover, .status-select-dropdown:focus {
-      border-color: #555;
-      background: #252525;
-    }
-    .status-select-dropdown option {
-      background: #141414;
-      color: #fff;
-    }
-  </style>
 </head>
 <body>
   <div class="container">
@@ -166,58 +119,5 @@
   </div>
 
   <script src="app.js"></script>
-  <script>
-    // Генерація прямих зірочок для точного вибору
-    function renderStarRating(channelId, currentRating) {
-      let html = `<div class="star-rating-select" data-id="${channelId}">`;
-      for (let i = 1; i <= 5; i++) {
-        const activeClass = i <= currentRating ? 'active' : '';
-        html += `<span class="${activeClass}" data-value="${i}" onclick="updateChannelRating('${channelId}', ${i})">★</span>`;
-      }
-      html += `</div>`;
-      return html;
-    }
-
-    // Генерація випадаючого списку статусу
-    function renderStatusDropdown(channelId, currentStatus) {
-      return `
-        <select class="status-select-dropdown" onchange="updateChannelStatus('${channelId}', this.value)">
-          <option value="white" ${currentStatus === 'white' ? 'selected' : ''}>whitelist</option>
-          <option value="black" ${currentStatus === 'black' ? 'selected' : ''}>blacklist</option>
-          <option value="new" ${currentStatus === 'new' ? 'selected' : ''}>new</option>
-        </select>
-      `;
-    }
-
-    // Функція оновлення зірок на бекенді
-    async function updateChannelRating(id, rating) {
-      try {
-        const res = await fetch(`/api/channels/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rating })
-        });
-        if (!res.ok) throw new Error();
-        if (typeof loadChannels === 'function') loadChannels();
-      } catch (e) {
-        alert("Не вдалося зберегти зміну");
-      }
-    }
-
-    // Функція оновлення статусу на бекенді
-    async function updateChannelStatus(id, status) {
-      try {
-        const res = await fetch(`/api/channels/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status })
-        });
-        if (!res.ok) throw new Error();
-        if (typeof loadChannels === 'function') loadChannels();
-      } catch (e) {
-        alert("Не вдалося зберегти зміну");
-      }
-    }
-  </script>
 </body>
 </html>
