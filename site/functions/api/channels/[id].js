@@ -1,58 +1,56 @@
-// GET   /api/channels/:id  -> один канал
-// PATCH /api/channels/:id  -> часткове оновлення, body: {quality?, status?}
-// Кожна правка пишеться в rating_log — це майбутній тренувальний датасет.
-
-export async function onRequestGet(context) {
-  const { env, params } = context;
-  const row = await env.DB.prepare("SELECT * FROM channels WHERE id = ?")
-    .bind(params.id).first();
-  if (!row) return Response.json({ error: "not_found" }, { status: 404 });
-  return Response.json(row);
-}
-
 export async function onRequestPatch(context) {
   const { request, env, params } = context;
-  let body;
+  const id = params.id;
+
   try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: "bad_json" }, { status: 400 });
+    const data = await request.json();
+    const updates = [];
+    const values = [];
+
+    // 1. Оценка качества (в базе колонка называется quality)
+    if (data.rating !== undefined) {
+      updates.push("quality = ?");
+      values.push(data.rating);
+    } else if (data.quality !== undefined) {
+      updates.push("quality = ?");
+      values.push(data.quality);
+    }
+
+    // 2. Статус (white / black / new)
+    if (data.status !== undefined) {
+      updates.push("status = ?");
+      values.push(data.status);
+    }
+
+    // 3. Тип канала
+    if (data.type !== undefined) {
+      updates.push("type = ?");
+      values.push(data.type);
+    }
+
+    // 4. Категория
+    if (data.category !== undefined) {
+      updates.push("category = ?");
+      values.push(data.category);
+    }
+
+    if (updates.length === 0) {
+      return new Response(JSON.stringify({ error: "No fields to update" }), { status: 400 });
+    }
+
+    updates.push("updated_at = datetime('now')");
+    values.push(id);
+
+    const sql = `UPDATE channels SET ${updates.join(", ")} WHERE id = ?`;
+    await env.DB.prepare(sql).bind(...values).run();
+
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
-
-  const current = await env.DB.prepare("SELECT * FROM channels WHERE id = ?")
-    .bind(params.id).first();
-  if (!current) return Response.json({ error: "not_found" }, { status: 404 });
-
-  const updates = [];
-  const values = [];
-  const logInserts = [];
-
-  if (body.quality !== undefined && body.quality !== current.quality) {
-    updates.push("quality = ?");
-    values.push(body.quality);
-    logInserts.push(["quality", String(current.quality), String(body.quality)]);
-  }
-  if (body.status !== undefined && body.status !== current.status) {
-    updates.push("status = ?");
-    values.push(body.status);
-    logInserts.push(["status", current.status, body.status]);
-  }
-
-  if (updates.length === 0) {
-    return Response.json({ ok: true, unchanged: true });
-  }
-
-  updates.push("updated_at = datetime('now')");
-  values.push(params.id);
-
-  await env.DB.prepare(`UPDATE channels SET ${updates.join(", ")} WHERE id = ?`)
-    .bind(...values).run();
-
-  for (const [field, oldV, newV] of logInserts) {
-    await env.DB.prepare(
-      "INSERT INTO rating_log (channel_id, field, old_value, new_value) VALUES (?,?,?,?)"
-    ).bind(params.id, field, oldV, newV).run();
-  }
-
-  return Response.json({ ok: true });
 }
