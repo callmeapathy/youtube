@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 
-const BATCH_LIMIT = 40; // Сколько каналов обновлять через YouTube API за один раз
+const BATCH_LIMIT = 40; // Количество каналов для обогащения через YouTube API за 1 запуск
 
 export default {
   async fetch(request, env) {
@@ -25,7 +25,7 @@ async function syncChannels(env) {
   };
 
   // -------------------------------------------------------------
-  // ЕТАП 1: Пакетне завантаження з Google Sheets в D1
+  // ЭТАП 1: Пакетный импорт из Google Sheets в D1
   // -------------------------------------------------------------
   if (env.GOOGLE_SHEET_CSV_URL) {
     try {
@@ -51,7 +51,6 @@ async function syncChannels(env) {
 
         const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
 
-        // Готуємо SQL-запит для пакетного виконання
         batchStatements.push(
           env.DB.prepare(`
             INSERT INTO channels (id, name, status, source, created_at, updated_at)
@@ -64,7 +63,7 @@ async function syncChannels(env) {
         );
       }
 
-      // Виконуємо записи порціями по 50 штук (щоб не перевищити лимиты Cloudflare)
+      // Выполняем запись пачками по 50 штук (без превышения подзапросов Cloudflare)
       const CHUNK_SIZE = 50;
       for (let i = 0; i < batchStatements.length; i += CHUNK_SIZE) {
         const chunk = batchStatements.slice(i, i + CHUNK_SIZE);
@@ -80,7 +79,7 @@ async function syncChannels(env) {
   }
 
   // -------------------------------------------------------------
-  // ЕТАП 2: Автоматичне оновлення метрик через YouTube API
+  // ЭТАП 2: Подтягивание названий, страны, языка и метрик с YouTube API
   // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
