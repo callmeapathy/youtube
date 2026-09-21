@@ -25,7 +25,7 @@ async function syncChannels(env) {
   };
 
   // -------------------------------------------------------------
-  // ЕТАП 1: Завантаження каналів з Google Sheets
+  // ЕТАП 1: Читаємо Google Sheet (посилання + статус) та додаємо нові ID
   // -------------------------------------------------------------
   if (env.GOOGLE_SHEET_CSV_URL) {
     try {
@@ -38,23 +38,26 @@ async function syncChannels(env) {
       });
 
       for (const row of rows) {
-        // Знаходимо посилання та назву (враховуємо різні варіанти заголовків)
-        const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'];
-        const exceptionTitle = row['Виключення'] || row['title'] || '';
-
+        // Беремо посилання з Google Таблиці
+        const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
+        // Статус з таблиці (якщо є колонка "status" / "статус" / "Виключення")
+        const rawStatus = row['status'] || row['статус'] || row['Виключення'] || 'black';
+        
         if (!rawUrl) continue;
 
         const channelId = parseChannelId(rawUrl);
         if (!channelId) continue;
 
-        // Вставляємо в базу D1 (UPSERT)
+        const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
+
+        // Додаємо новий канал в базу D1 з мінімальними даними (назву й метрики заповнить YouTube API нижче)
         await env.DB.prepare(`
-          INSERT INTO channels (id, title, status, source, created_at, updated_at)
-          VALUES (?, ?, 'black', 'sheet_import', datetime('now'), datetime('now'))
+          INSERT INTO channels (id, status, source, created_at, updated_at)
+          VALUES (?, ?, 'sheet_import', datetime('now'), datetime('now'))
           ON CONFLICT(id) DO UPDATE SET
-            title = CASE WHEN channels.title IS NULL OR channels.title = '' THEN excluded.title ELSE channels.title END,
+            status = excluded.status,
             updated_at = datetime('now')
-        `).bind(channelId, exceptionTitle).run();
+        `).bind(channelId, statusValue).run();
 
         result.sheetsImported++;
       }
@@ -66,7 +69,7 @@ async function syncChannels(env) {
   }
 
   // -------------------------------------------------------------
-  // ЕТАП 2: Оновлення метрик через YouTube API
+  // ЕТАП 2: Автоматично підтягуємо назви, країну, мову та метрики з YouTube API
   // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
@@ -74,46 +77,74 @@ async function syncChannels(env) {
     return result;
   }
 
-  const { results: staleChannels } = await env.DB.prepare(
-    `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
-  ).bind(BATCH_LIMIT).all();
+  try {
+    // Беремо канали, які давно не оновлювалися або у яких немає назви
+    const { results: staleChannels } = await env.DB.prepare(
+      `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
+    ).bind(BATCH_LIMIT).all();
 
-  for (const { id } of staleChannels) {
-    try {
-      const stats = await fetchChannelStats(id, apiKey);
-      if (!stats) continue;
+    for (const { id } of staleChannels) {
+      try {
+        const stats = await fetchChannelStats(id, apiKey);
+        if (!stats) continue;
 
-      // ВИПРАВЛЕНО: назви колонок avg_views_month та videos_month
-      await env.DB.prepare(`
-        UPDATE channels
-        SET subscribers = ?, avg_views_month = ?, videos_month = ?, updated_at = datetime('now')
-        WHERE id = ?
-      `).bind(stats.subscribers, stats.avgViewsMonth, stats.videosMonth, id).run();
+        // Заповнюємо name, country, language, subscribers, avg_views_month, videos_month
+        await env.DB.prepare(`
+          UPDATE channels
+          SET 
+            name = COALESCE(NULLIF(?, ''), name),
+            country = COALESCE(NULLIF(?, ''), country),
+            language = COALESCE(NULLIF(?, ''), language),
+            subscribers = ?, 
+            avg_views_month = ?, 
+            videos_month = ?, 
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          stats.name,
+          stats.country,
+          stats.language,
+          stats.subscribers,
+          stats.avgViewsMonth,
+          stats.videosMonth,
+          id
+        ).run();
 
-      result.ytUpdated++;
-    } catch (e) {
-      result.errors.push({ step: "youtube_sync", id, error: String(e) });
+        result.ytUpdated++;
+      } catch (e) {
+        result.errors.push({ step: "youtube_sync", id, error: String(e) });
+      }
     }
+  } catch (e) {
+    result.errors.push({ step: "youtube_sync_init", error: String(e) });
   }
 
   return result;
 }
 
 function parseChannelId(url) {
+  if (!url) return null;
   const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
   return match ? match[1] : null;
 }
 
 async function fetchChannelStats(channelId, apiKey) {
   const chRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelId}&key=${apiKey}`
+    `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet,brandingSettings&id=${channelId}&key=${apiKey}`
   );
   const chData = await chRes.json();
   const channel = chData.items?.[0];
   if (!channel) return null;
 
-  const subscribers = Number(channel.statistics?.subscriberCount || 0);
+  const snippet = channel.snippet || {};
+  const stats = channel.statistics || {};
 
+  const name = snippet.title || '';
+  const country = snippet.country || '';
+  const language = snippet.defaultLanguage || snippet.audioLanguage || '';
+  const subscribers = Number(stats.subscriberCount || 0);
+
+  // Пошук відео за останні 30 днів для розрахунку середніх переглядів
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const searchRes = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
@@ -123,7 +154,7 @@ async function fetchChannelStats(channelId, apiKey) {
   const videoIds = (searchData.items || []).map(i => i.id?.videoId).filter(Boolean);
 
   if (videoIds.length === 0) {
-    return { subscribers, avgViewsMonth: 0, videosMonth: 0 };
+    return { name, country, language, subscribers, avgViewsMonth: 0, videosMonth: 0 };
   }
 
   const videosRes = await fetch(
@@ -133,5 +164,5 @@ async function fetchChannelStats(channelId, apiKey) {
   const views = (videosData.items || []).map(v => Number(v.statistics?.viewCount || 0));
   const avgViewsMonth = views.length ? Math.round(views.reduce((a, b) => a + b, 0) / views.length) : 0;
 
-  return { subscribers, avgViewsMonth, videosMonth: videoIds.length };
+  return { name, country, language, subscribers, avgViewsMonth, videosMonth: videoIds.length };
 }
