@@ -1,0 +1,14 @@
+name = "ytplacements-sync"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# Запуск щодня о 03:00 UTC (~06:00 за київським часом)
+[triggers]
+crons = ["0 3 * * *"]
+
+# ЗАПОВНИ після `npx wrangler d1 create ytplacements`:
+# database_id візьми з виводу цієї команди
+[[d1_databases]]
+binding = "DB"
+database_name = "ytplacements"
+database_id = "PASTE_DATABASE_ID_HERE"
