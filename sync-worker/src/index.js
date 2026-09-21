@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 
-const BATCH_LIMIT = 40; // Количество каналов для обогащения данными из YouTube API за один прогон
+const BATCH_LIMIT = 40; // Сколько каналов обновлять через YouTube API за один раз
 
 export default {
   async fetch(request, env) {
@@ -25,7 +25,7 @@ async function syncChannels(env) {
   };
 
   // -------------------------------------------------------------
-  // ЕТАП 1: Читаємо Google Sheet (посилання + статус) та додаємо ID в D1
+  // ЕТАП 1: Пакетне завантаження з Google Sheets в D1
   // -------------------------------------------------------------
   if (env.GOOGLE_SHEET_CSV_URL) {
     try {
@@ -37,11 +37,11 @@ async function syncChannels(env) {
         skipEmptyLines: true
       });
 
+      const batchStatements = [];
+
       for (const row of rows) {
-        // Беремо посилання та название/статус із твоєї Google Таблиці
         const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
         const rawStatus = row['status'] || row['статус'] || 'black';
-        // Обязательно передаем name (из колонки "Виключення" или временно ID), чтобы не было NOT NULL ошибки в SQLite
         const initialName = row['Виключення'] || row['name'] || 'Pending...';
         
         if (!rawUrl) continue;
@@ -51,18 +51,27 @@ async function syncChannels(env) {
 
         const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
 
-        // Сохраняем канал в базу D1
-        await env.DB.prepare(`
-          INSERT INTO channels (id, name, status, source, created_at, updated_at)
-          VALUES (?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
-          ON CONFLICT(id) DO UPDATE SET
-            status = excluded.status,
-            name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END,
-            updated_at = datetime('now')
-        `).bind(channelId, initialName, statusValue).run();
-
-        result.sheetsImported++;
+        // Готуємо SQL-запит для пакетного виконання
+        batchStatements.push(
+          env.DB.prepare(`
+            INSERT INTO channels (id, name, status, source, created_at, updated_at)
+            VALUES (?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+              status = excluded.status,
+              name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END,
+              updated_at = datetime('now')
+          `).bind(channelId, initialName, statusValue)
+        );
       }
+
+      // Виконуємо записи порціями по 50 штук (щоб не перевищити лимиты Cloudflare)
+      const CHUNK_SIZE = 50;
+      for (let i = 0; i < batchStatements.length; i += CHUNK_SIZE) {
+        const chunk = batchStatements.slice(i, i + CHUNK_SIZE);
+        await env.DB.batch(chunk);
+        result.sheetsImported += chunk.length;
+      }
+
     } catch (e) {
       result.errors.push({ step: "google_sheets_import", error: String(e) });
     }
@@ -71,7 +80,7 @@ async function syncChannels(env) {
   }
 
   // -------------------------------------------------------------
-  // ЕТАП 2: Автоматично підтягуємо назви, країну, мову та метрики з YouTube API
+  // ЕТАП 2: Автоматичне оновлення метрик через YouTube API
   // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
@@ -80,7 +89,6 @@ async function syncChannels(env) {
   }
 
   try {
-    // Выбираем каналы, которые дольше всего не обновлялись
     const { results: staleChannels } = await env.DB.prepare(
       `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
     ).bind(BATCH_LIMIT).all();
@@ -90,7 +98,6 @@ async function syncChannels(env) {
         const stats = await fetchChannelStats(id, apiKey);
         if (!stats) continue;
 
-        // Заполняем name, country, language, subscribers, avg_views_month, videos_month в D1
         await env.DB.prepare(`
           UPDATE channels
           SET 
@@ -124,14 +131,12 @@ async function syncChannels(env) {
   return result;
 }
 
-// Извлечение ID канала из ссылки youtube.com/channel/UC...
 function parseChannelId(url) {
   if (!url) return null;
   const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
   return match ? match[1] : null;
 }
 
-// Запрос данных из YouTube Data API v3
 async function fetchChannelStats(channelId, apiKey) {
   const chRes = await fetch(
     `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelId}&key=${apiKey}`
@@ -148,7 +153,6 @@ async function fetchChannelStats(channelId, apiKey) {
   const language = snippet.defaultLanguage || snippet.audioLanguage || '';
   const subscribers = Number(stats.subscriberCount || 0);
 
-  // Поиск видео за последние 30 дней для расчета средних просмотров
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const searchRes = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
