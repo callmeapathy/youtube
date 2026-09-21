@@ -7,31 +7,29 @@ export async function onRequestPatch(context) {
     const updates = [];
     const values = [];
 
-    // 1. Оценка качества (в базе колонка называется quality)
-    if (data.rating !== undefined) {
+    // Читаем рейтинг из любого ключа, который пришлет фронтенд
+    const ratingValue = data.rating !== undefined ? data.rating : data.quality;
+    if (ratingValue !== undefined) {
       updates.push("quality = ?");
-      values.push(data.rating);
-    } else if (data.quality !== undefined) {
-      updates.push("quality = ?");
-      values.push(data.quality);
+      values.push(Number(ratingValue));
     }
 
-    // 2. Статус (white / black / new)
+    // Читаем статус
     if (data.status !== undefined) {
       updates.push("status = ?");
-      values.push(data.status);
+      values.push(String(data.status));
     }
 
-    // 3. Тип канала
+    // Читаем тип
     if (data.type !== undefined) {
       updates.push("type = ?");
-      values.push(data.type);
+      values.push(String(data.type));
     }
 
-    // 4. Категория
+    // Читаем категорию
     if (data.category !== undefined) {
       updates.push("category = ?");
-      values.push(data.category);
+      values.push(String(data.category));
     }
 
     if (updates.length === 0) {
@@ -45,6 +43,7 @@ export async function onRequestPatch(context) {
     await env.DB.prepare(sql).bind(...values).run();
 
     return new Response(JSON.stringify({ success: true }), {
+      status: 200,
       headers: { "Content-Type": "application/json" }
     });
   } catch (err) {
