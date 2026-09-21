@@ -4,174 +4,184 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YT Placements — Каталог YouTube-каналів</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css" />
   <style>
-    body {
-      background-color: #12100e;
-      color: #e5e0d8;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    }
-    .star-rating span {
+    /* Стилізація інтерактивного вибору зірочок */
+    .star-rating-select {
+      display: inline-flex;
+      gap: 2px;
       cursor: pointer;
-      transition: color 0.15s ease-in-out;
+      user-select: none;
     }
-    .star-rating:hover span {
-      color: #fbbf24;
+    .star-rating-select span {
+      color: #4a4a4a;
+      transition: color 0.15s ease, transform 0.1s ease;
+      font-size: 1.1em;
     }
-    .star-rating span:hover ~ span {
-      color: #4b5563;
+    .star-rating-select span.active {
+      color: #ffb400;
     }
-    select {
-      background-color: #1c1917;
-      color: #e5e0d8;
+    .star-rating-select:hover span {
+      color: #ffb400;
+    }
+    .star-rating-select span:hover ~ span {
+      color: #4a4a4a;
+    }
+    .star-rating-select span:active {
+      transform: scale(1.2);
+    }
+
+    /* Стилізація кастомного дропдауну статусу під загальний темний дизайн */
+    .status-select-dropdown {
+      background: #1a1a1a;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 0.85em;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .status-select-dropdown:hover, .status-select-dropdown:focus {
+      border-color: #555;
+      background: #252525;
+    }
+    .status-select-dropdown option {
+      background: #141414;
+      color: #fff;
     }
   </style>
 </head>
-<body class="p-6 max-w-7xl mx-auto">
-  <header class="mb-8">
-    <h1 class="text-3xl font-bold text-amber-500 mb-2">YT Placements</h1>
-    <p class="text-stone-400">Каталог YouTube-каналів української аудиторії — whitelist / blacklist для Google Ads</p>
-  </header>
+<body>
+  <div class="container">
+    <header>
+      <h1>YT Placements</h1>
+      <p class="subtitle">Каталог YouTube-каналів української аудиторії — whitelist / blacklist для Google Ads</p>
+    </header>
 
-  <!-- Фільтри -->
-  <section class="bg-stone-900/60 p-6 rounded-xl border border-stone-800 mb-8 grid grid-cols-1 md:grid-cols-4 gap-4">
-    <div>
-      <label class="block text-xs uppercase tracking-wider text-stone-400 mb-2">Пошук</label>
-      <input type="text" id="search-input" placeholder="назва або ID каналу" class="w-full bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
-    </div>
+    <!-- ФІЛЬТРИ -->
+    <section class="filters-card">
+      <div class="filters-grid">
+        <div class="filter-group">
+          <label>ПОШУК</label>
+          <input type="text" id="search-input" placeholder="назва або ID каналу" />
+        </div>
 
-    <div>
-      <label class="block text-xs uppercase tracking-wider text-stone-400 mb-2">Статус у списках</label>
-      <select id="status-filter" class="w-full border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
-        <option value="all">усі</option>
-        <option value="white">whitelist</option>
-        <option value="black">blacklist</option>
-        <option value="new">new</option>
-      </select>
-    </div>
+        <div class="filter-group">
+          <label>КРАЇНА ПОХОДЖЕННЯ</label>
+          <select id="country-filter" multiple size="4">
+            <option value="" selected>Усі країни</option>
+          </select>
+          <span class="filter-hint">Ctrl / ⌘ + клик — показати всі</span>
+        </div>
 
-    <div>
-      <label class="block text-xs uppercase tracking-wider text-stone-400 mb-2">Тип каналу</label>
-      <select id="type-filter" class="w-full border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
-        <option value="all">усі типи</option>
-        <option value="Медіа">Медіа</option>
-        <option value="Блогер">Блогер</option>
-        <option value="Паблік">Паблік</option>
-        <option value="Бренд">Бренд</option>
-      </select>
-    </div>
+        <div class="filter-group">
+          <label>ТИП КАНАЛУ</label>
+          <select id="type-filter" multiple size="4">
+            <option value="" selected>Усі типи</option>
+          </select>
+          <span class="filter-hint">показати всі</span>
+        </div>
 
-    <div>
-      <label class="block text-xs uppercase tracking-wider text-stone-400 mb-2">Тематика</label>
-      <select id="category-filter" class="w-full border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
-        <option value="all">усі тематики</option>
-        <option value="Ігри">Ігри</option>
-        <option value="Музика">Музика</option>
-        <option value="Розваги">Розваги</option>
-        <option value="Новини та політика">Новини та політика</option>
-        <option value="Блоги">Блоги</option>
-        <option value="Наука та технології">Наука та технології</option>
-        <option value="Спорт">Спорт</option>
-        <option value="Фільми та анімація">Фільми та анімація</option>
-        <option value="Освіта">Освіта</option>
-      </select>
-    </div>
-  </section>
+        <div class="filter-group">
+          <label>ТЕМАТИКА КОНТЕНТУ</label>
+          <select id="category-filter" multiple size="4">
+            <option value="" selected>Усі тематики</option>
+          </select>
+          <span class="filter-hint">показати всі</span>
+        </div>
 
-  <!-- Таблиця -->
-  <section class="bg-stone-900/60 rounded-xl border border-stone-800 overflow-hidden">
-    <div class="overflow-x-auto">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-stone-800/80 text-stone-400 uppercase text-xs tracking-wider">
+        <div class="filter-group">
+          <label>МОВА</label>
+          <select id="language-filter" multiple size="4">
+            <option value="" selected>Усі мови</option>
+          </select>
+          <span class="filter-hint">показати всі</span>
+        </div>
+
+        <div class="filter-group">
+          <label>ОЦІНКА ЯКОСТІ</label>
+          <select id="quality-filter">
+            <option value="">Будь-яка</option>
+            <option value="5">5 зірок</option>
+            <option value="4">4+ зірки</option>
+            <option value="3">3+ зірки</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label>СЕР. ПЕРЕГЛЯДИ / МІС — ВІД</label>
+          <input type="number" id="views-min-input" placeholder="0" />
+        </div>
+      </div>
+
+      <div class="filter-group status-group">
+        <label>СТАТУС У СПИСКАХ</label>
+        <select id="status-filter">
+          <option value="">Усі</option>
+          <option value="white">Whitelist</option>
+          <option value="black">Blacklist</option>
+          <option value="new">New</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- ПАНЕЛЬ ДІЙ -->
+    <section class="actions-bar">
+      <div class="counter-info">
+        <span id="rendered-count">0</span> з <span id="total-count">0</span> каналів — обрано <strong id="selected-count">0</strong>
+      </div>
+      <div class="buttons-group">
+        <button id="select-all-btn" class="btn btn-secondary">Обрати всі відфільтровані</button>
+        <button id="deselect-all-btn" class="btn btn-secondary">Зняти виділення</button>
+        <button id="export-csv-btn" class="btn btn-primary">↓ CSV</button>
+        <button id="export-xlsx-btn" class="btn btn-primary">↓ XLSX</button>
+      </div>
+    </section>
+
+    <!-- ТАБЛИЦЯ -->
+    <main class="table-container">
+      <table id="channels-table">
+        <thead>
           <tr>
-            <th class="p-4">Канал</th>
-            <th class="p-4">Країна</th>
-            <th class="p-4">Тип</th>
-            <th class="p-4">Тематика</th>
-            <th class="p-4">Мова</th>
-            <th class="p-4">Підписники</th>
-            <th class="p-4">Якість</th>
-            <th class="p-4">Статус</th>
+            <th class="col-checkbox"><input type="checkbox" id="master-checkbox" /></th>
+            <th class="col-channel">КАНАЛ</th>
+            <th class="col-country">КРАЇНА</th>
+            <th class="col-type">ТИП</th>
+            <th class="col-category">ТЕМАТИКА</th>
+            <th class="col-lang">МОВА</th>
+            <th class="col-subs">ПІДПИСНИКИ</th>
+            <th class="col-views">СЕР. ПЕРЕГЛЯДИ / МІС</th>
+            <th class="col-videos">ВІДЕО / МІС</th>
+            <th class="col-quality">ЯКІСТЬ</th>
+            <th class="col-status">СТАТУС</th>
           </tr>
         </thead>
-        <tbody id="channels-table-body" class="divide-y divide-stone-800">
-          <tr>
-            <td colspan="8" class="p-8 text-center text-stone-500">Завантаження каналів...</td>
-          </tr>
+        <tbody id="channels-tbody">
+          <!-- Динамічні рядки -->
         </tbody>
       </table>
-    </div>
-  </section>
+    </main>
+  </div>
 
+  <script src="app.js"></script>
   <script>
-    let channels = [];
-
-    async function loadChannels() {
-      try {
-        const res = await fetch('/api/channels');
-        channels = await res.json();
-        renderChannels();
-      } catch (err) {
-        console.error(err);
-        document.getElementById('channels-table-body').innerHTML = `
-          <tr><td colspan="8" class="p-8 text-center text-red-500">Помилка завантаження даних</td></tr>
-        `;
-      }
-    }
-
-    function renderChannels() {
-      const search = document.getElementById('search-input').value.toLowerCase();
-      const status = document.getElementById('status-filter').value;
-      const type = document.getElementById('type-filter').value;
-      const category = document.getElementById('category-filter').value;
-
-      const filtered = channels.filter(c => {
-        const matchSearch = (c.name || '').toLowerCase().includes(search) || (c.id || '').toLowerCase().includes(search);
-        const matchStatus = status === 'all' || c.status === status;
-        const matchType = type === 'all' || c.type === type;
-        const matchCategory = category === 'all' || c.category === category;
-        return matchSearch && matchStatus && matchType && matchCategory;
-      });
-
-      const tbody = document.getElementById('channels-table-body');
-      if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-stone-500">Каналів не знайдено</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = filtered.map(c => `
-        <tr class="hover:bg-stone-800/40 transition">
-          <td class="p-4 font-medium">
-            <a href="https://youtube.com/channel/${c.id}" target="_blank" class="text-amber-400 hover:underline block">${escapeHtml(c.name || c.id)}</a>
-            <span class="text-xs text-stone-500">${c.id}</span>
-          </td>
-          <td class="p-4 text-stone-400">${c.country || '—'}</td>
-          <td class="p-4 text-stone-400">${c.type || '—'}</td>
-          <td class="p-4 text-stone-400">${c.category || '—'}</td>
-          <td class="p-4 text-stone-400">${c.language || '—'}</td>
-          <td class="p-4 text-stone-300 font-mono">${(c.subscribers || 0).toLocaleString()}</td>
-          <td class="p-4">
-            ${renderStarSelector(c.id, c.quality || 0)}
-          </td>
-          <td class="p-4">
-            ${renderStatusDropdown(c.id, c.status || 'black')}
-          </td>
-        </tr>
-      `).join('');
-    }
-
-    function renderStarSelector(id, quality) {
-      let stars = '';
+    // Генерація прямих зірочок для точного вибору
+    function renderStarRating(channelId, currentRating) {
+      let html = `<div class="star-rating-select" data-id="${channelId}">`;
       for (let i = 1; i <= 5; i++) {
-        const color = i <= quality ? 'text-amber-400' : 'text-stone-600';
-        stars += `<span class="${color} text-lg px-0.5 cursor-pointer hover:text-amber-300" onclick="updateChannel('${id}', { rating: ${i} })">★</span>`;
+        const activeClass = i <= currentRating ? 'active' : '';
+        html += `<span class="${activeClass}" data-value="${i}" onclick="updateChannelRating('${channelId}', ${i})">★</span>`;
       }
-      return `<div class="star-rating inline-flex">${stars}</div>`;
+      html += `</div>`;
+      return html;
     }
 
-    function renderStatusDropdown(id, currentStatus) {
+    // Генерація випадаючого списку статусу
+    function renderStatusDropdown(channelId, currentStatus) {
       return `
-        <select onchange="updateChannel('${id}', { status: this.value })" class="bg-stone-800 border border-stone-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-amber-500">
+        <select class="status-select-dropdown" onchange="updateChannelStatus('${channelId}', this.value)">
           <option value="white" ${currentStatus === 'white' ? 'selected' : ''}>whitelist</option>
           <option value="black" ${currentStatus === 'black' ? 'selected' : ''}>blacklist</option>
           <option value="new" ${currentStatus === 'new' ? 'selected' : ''}>new</option>
@@ -179,39 +189,35 @@
       `;
     }
 
-    async function updateChannel(id, patchData) {
+    // Функція оновлення зірок на бекенді
+    async function updateChannelRating(id, rating) {
       try {
         const res = await fetch(`/api/channels/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(patchData)
+          body: JSON.stringify({ rating })
         });
-
-        if (!res.ok) throw new Error('Failed');
-
-        // Оновлюємо локальний масив
-        const ch = channels.find(item => item.id === id);
-        if (ch) {
-          if (patchData.rating !== undefined) ch.quality = patchData.rating;
-          if (patchData.status !== undefined) ch.status = patchData.status;
-        }
-
-        renderChannels();
+        if (!res.ok) throw new Error();
+        if (typeof loadChannels === 'function') loadChannels();
       } catch (e) {
-        alert('Не вдалося зберегти зміну');
+        alert("Не вдалося зберегти зміну");
       }
     }
 
-    function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    // Функція оновлення статусу на бекенді
+    async function updateChannelStatus(id, status) {
+      try {
+        const res = await fetch(`/api/channels/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+        if (!res.ok) throw new Error();
+        if (typeof loadChannels === 'function') loadChannels();
+      } catch (e) {
+        alert("Не вдалося зберегти зміну");
+      }
     }
-
-    document.getElementById('search-input').addEventListener('input', renderChannels);
-    document.getElementById('status-filter').addEventListener('change', renderChannels);
-    document.getElementById('type-filter').addEventListener('change', renderChannels);
-    document.getElementById('category-filter').addEventListener('change', renderChannels);
-
-    loadChannels();
   </script>
 </body>
 </html>
