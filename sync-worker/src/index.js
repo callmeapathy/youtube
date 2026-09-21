@@ -1,6 +1,8 @@
 import Papa from 'papaparse';
 
-const BATCH_LIMIT = 100; // Сколько каналов обогащать через YouTube API за 1 запуск
+// Ограничение: сколько каналов обрабатывать за 1 запуск,
+// чтобы не вылезать за лимиты подзапросов Cloudflare
+const BATCH_LIMIT = 50; 
 
 export default {
   async fetch(request, env) {
@@ -19,133 +21,108 @@ export default {
 
 async function syncChannels(env) {
   const result = {
-    sheetsImported: 0,
-    ytUpdated: 0,
+    processedFromSheets: 0,
+    addedOrUpdatedInDB: 0,
     errors: []
   };
 
-  // -------------------------------------------------------------
-  // ЭТАП 1: Безопасный пакетный импорт из Google Sheets
-  // -------------------------------------------------------------
-  if (env.GOOGLE_SHEET_CSV_URL) {
-    try {
-      const sheetRes = await fetch(env.GOOGLE_SHEET_CSV_URL);
-      const csvText = await sheetRes.text();
-
-      const { data: rows } = Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: true
-      });
-
-      const batchStatements = [];
-
-      // Ограничиваем количество обработанных строк за один прогон (максимум 500 штук),
-      // чтобы не упереться в лимиты Cloudflare Worker Invocation
-      const maxRowsToProcess = Math.min(rows.length, 500);
-
-      for (let i = 0; i < maxRowsToProcess; i++) {
-        const row = rows[i];
-        const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
-        const rawStatus = row['status'] || row['статус'] || 'black';
-        const initialName = row['Виключення'] || row['name'] || 'Pending...';
-        
-        if (!rawUrl) continue;
-
-        const channelId = parseChannelId(rawUrl);
-        if (!channelId) continue;
-
-        const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
-
-        batchStatements.push(
-          env.DB.prepare(`
-            INSERT INTO channels (id, name, status, source, created_at, updated_at)
-            VALUES (?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
-            ON CONFLICT(id) DO UPDATE SET
-              status = excluded.status,
-              name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END
-          `).bind(channelId, initialName, statusValue)
-        );
-      }
-
-      // Выполняем запись крупными пакетами по 100 операций за раз
-      const CHUNK_SIZE = 100;
-      for (let i = 0; i < batchStatements.length; i += CHUNK_SIZE) {
-        const chunk = batchStatements.slice(i, i + CHUNK_SIZE);
-        await env.DB.batch(chunk);
-        result.sheetsImported += chunk.length;
-      }
-
-    } catch (e) {
-      result.errors.push({ step: "google_sheets_import", error: String(e) });
-    }
-  } else {
-    result.errors.push({ step: "google_sheets_import", error: "GOOGLE_SHEET_CSV_URL secret is not set" });
-  }
-
-  // -------------------------------------------------------------
-  // ЭТАП 2: Заполнение названий, страны, языка и подписчиков с YouTube API
-  // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
-    result.errors.push({ step: "youtube_sync", error: "YOUTUBE_API_KEY secret is not set" });
+    result.errors.push({ step: "init", error: "YOUTUBE_API_KEY secret is not set" });
+    return result;
+  }
+
+  if (!env.GOOGLE_SHEET_CSV_URL) {
+    result.errors.push({ step: "init", error: "GOOGLE_SHEET_CSV_URL secret is not set" });
     return result;
   }
 
   try {
-    // Берем каналы, у которых еще нет настоящего имени или которые давно не обновлялись
-    const { results: staleChannels } = await env.DB.prepare(
-      `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
-    ).bind(BATCH_LIMIT).all();
+    // 1. Загружаем Google Sheet
+    const sheetRes = await fetch(env.GOOGLE_SHEET_CSV_URL);
+    const csvText = await sheetRes.text();
 
-    if (staleChannels && staleChannels.length > 0) {
-      const channelIds = staleChannels.map(c => c.id);
+    const { data: rows } = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true
+    });
 
-      // Запрашиваем данные пачками по 50 каналов за один вызов API
-      for (let i = 0; i < channelIds.length; i += 50) {
-        const chunkIds = channelIds.slice(i, i + 50);
-        
-        const chRes = await fetch(
-          `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${chunkIds.join(',')}&key=${apiKey}`
+    // 2. Собираем уникальные каналы из таблицы (id + status)
+    const pendingChannels = new Map();
+
+    for (const row of rows) {
+      const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
+      const rawStatus = row['status'] || row['статус'] || 'black';
+
+      if (!rawUrl) continue;
+
+      const channelId = parseChannelId(rawUrl);
+      if (!channelId) continue;
+
+      const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
+      pendingChannels.set(channelId, statusValue);
+    }
+
+    result.processedFromSheets = pendingChannels.size;
+
+    // 3. Достаем список ID для обработки текущей порцией (BATCH_LIMIT)
+    const allChannelIds = Array.from(pendingChannels.keys()).slice(0, BATCH_LIMIT);
+
+    if (allChannelIds.length === 0) {
+      return result;
+    }
+
+    // 4. Пакетно запрашиваем данные у YouTube API (по 50 штук за раз)
+    const updateBatch = [];
+
+    for (let i = 0; i < allChannelIds.length; i += 50) {
+      const chunkIds = allChannelIds.slice(i, i + 50);
+
+      const chRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${chunkIds.join(',')}&key=${apiKey}`
+      );
+      const chData = await chRes.json();
+
+      if (!chData.items || chData.items.length === 0) continue;
+
+      for (const item of chData.items) {
+        const id = item.id;
+        const snippet = item.snippet || {};
+        const stats = item.statistics || {};
+
+        const name = snippet.title;
+        if (!name) continue; // Пропускаем, если имени нет
+
+        const country = snippet.country || 'XX';
+        const language = snippet.defaultLanguage || snippet.audioLanguage || 'uk';
+        const subscribers = Number(stats.subscriberCount || 0);
+        const status = pendingChannels.get(id) || 'black';
+
+        // Формируем запрос на добавление уже ПОЛНОСТЬЮ ЗАПОЛНЕННОЙ записи
+        updateBatch.push(
+          env.DB.prepare(`
+            INSERT INTO channels (id, name, country, language, subscribers, status, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              country = excluded.country,
+              language = excluded.language,
+              subscribers = excluded.subscribers,
+              status = excluded.status,
+              updated_at = datetime('now')
+          `).bind(id, name, country, language, subscribers, status)
         );
-        const chData = await chRes.json();
-
-        if (chData.items && chData.items.length > 0) {
-          const updateBatch = [];
-
-          for (const item of chData.items) {
-            const id = item.id;
-            const snippet = item.snippet || {};
-            const stats = item.statistics || {};
-
-            const name = snippet.title || 'Unknown Channel';
-            const country = snippet.country || 'XX';
-            const language = snippet.defaultLanguage || snippet.audioLanguage || 'uk';
-            const subscribers = Number(stats.subscriberCount || 0);
-
-            updateBatch.push(
-              env.DB.prepare(`
-                UPDATE channels
-                SET 
-                  name = COALESCE(NULLIF(?, ''), name),
-                  country = COALESCE(NULLIF(?, ''), country),
-                  language = COALESCE(NULLIF(?, ''), language),
-                  subscribers = ?,
-                  updated_at = datetime('now')
-                WHERE id = ?
-              `).bind(name, country, language, subscribers, id)
-            );
-          }
-
-          if (updateBatch.length > 0) {
-            await env.DB.batch(updateBatch);
-            result.ytUpdated += updateBatch.length;
-          }
-        }
       }
     }
 
+    // 5. Записываем в D1 только готовые записи
+    if (updateBatch.length > 0) {
+      await env.DB.batch(updateBatch);
+      result.addedOrUpdatedInDB = updateBatch.length;
+    }
+
   } catch (e) {
-    result.errors.push({ step: "youtube_sync_batch", error: String(e) });
+    result.errors.push({ step: "sync_process", error: String(e) });
   }
 
   return result;
