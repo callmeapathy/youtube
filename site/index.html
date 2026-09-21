@@ -1,123 +1,321 @@
 <!DOCTYPE html>
 <html lang="uk">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YT Placements — Каталог YouTube-каналів</title>
-  <link rel="stylesheet" href="style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Placements — каталог каналів для Google Ads</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f6f6f4; --panel:#ffffff; --panel-2:#fbfbf9; --line:#e2e1dc; --line-2:#efeeea;
+  --ink:#1c1b19; --ink-2:#5e5c56; --ink-3:#908d85;
+  --accent:#b8522e; --accent-soft:#f6e7e0;
+  --good:#3f7d4e; --bad:#b03a3a; --warn:#b5821f;
+  --radius:10px; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#16150f; --panel:#1e1d17; --panel-2:#232219; --line:#34322a; --line-2:#2a2921;
+  --ink:#f0eee6; --ink-2:#aaa69a; --ink-3:#7c7970; --accent:#e08a5f; --accent-soft:#3a2418;
+  --good:#7bbb87; --bad:#e08080; --warn:#d8ae5a;
+}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45}
+.wrap{max-width:1400px;margin:0 auto;padding:20px 18px 60px}
+header{margin-bottom:18px}
+h1{font-size:19px;margin:0;letter-spacing:-.02em;font-weight:650}
+.sub{color:var(--ink-3);font-size:12.5px;margin-top:3px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+.filters{padding:14px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));margin-bottom:14px}
+.f label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:5px;font-weight:600}
+select,input[type=text],input[type=number]{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);color:var(--ink);font-family:inherit;font-size:13px}
+select[multiple]{height:104px;padding:4px}
+.hint{font-size:10.5px;color:var(--ink-3);margin-top:4px}
+.hint a.reset{color:var(--accent);text-decoration:none;font-weight:600}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 14px;margin-bottom:12px}
+.count{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
+.spacer{flex:1}
+button{font-family:inherit;font-size:13px;padding:7px 12px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);cursor:pointer;font-weight:500}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.4;cursor:not-allowed}
+.tablewrap{overflow-x:auto;border-radius:var(--radius)}
+table{border-collapse:collapse;width:100%;min-width:1080px}
+th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:600;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap;position:sticky;top:0;background:var(--panel)}
+th.sortable{cursor:pointer}
+td{padding:8px 10px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+tbody tr:hover{background:var(--panel-2)}
+tbody tr.sel{background:var(--accent-soft)}
+.num{font-family:var(--mono);font-size:12.5px;text-align:right;white-space:nowrap}
+.ch{display:flex;align-items:center;gap:9px;min-width:210px}
+.ava{width:30px;height:30px;border-radius:50%;flex:0 0 30px;display:grid;place-items:center;font-size:12px;font-weight:700;color:#fff}
+.cname a{color:inherit;text-decoration:none;font-weight:550}
+.cname a:hover{color:var(--accent);text-decoration:underline}
+.cid{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:5px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2)}
+.stars{cursor:pointer;font-size:13px}
+.s-hi{color:var(--good)} .s-mid{color:var(--warn)} .s-lo{color:var(--bad)}
+.stars .off{color:var(--line)}
+.status{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid;cursor:pointer;font-weight:600;background:none;font-family:inherit}
+.st-w{color:var(--good);border-color:var(--good)} .st-b{color:var(--bad);border-color:var(--bad)} .st-n{color:var(--ink-3);border-color:var(--line)}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.empty,.loading{padding:44px;text-align:center;color:var(--ink-3)}
+.foot{margin-top:14px;font-size:11.5px;color:var(--ink-3)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:13px;z-index:50;opacity:0;pointer-events:none;transition:opacity .18s}
+.toast.on{opacity:1}
+</style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>YT Placements</h1>
-      <p class="subtitle">Каталог YouTube-каналів української аудиторії — whitelist / blacklist для Google Ads</p>
-    </header>
+<div class="wrap">
+<header>
+  <h1>YT Placements</h1>
+  <div class="sub">Каталог YouTube-каналів української аудиторії → whitelist / blacklist для Google Ads</div>
+</header>
 
-    <!-- ФІЛЬТРИ -->
-    <section class="filters-card">
-      <div class="filters-grid">
-        <div class="filter-group">
-          <label>ПОШУК</label>
-          <input type="text" id="search-input" placeholder="назва або ID каналу" />
-        </div>
+<div class="panel filters">
+  <div class="f"><label>Пошук</label><input type="text" id="q" placeholder="назва або ID каналу"></div>
+  <div class="f"><label>Країна походження</label><select id="fCountry" multiple></select>
+    <div class="hint">Ctrl/⌘ — кілька · <a href="#" class="reset" data-for="fCountry">показати всі</a></div></div>
+  <div class="f"><label>Тип каналу</label><select id="fType" multiple></select>
+    <div class="hint"><a href="#" class="reset" data-for="fType">показати всі</a></div></div>
+  <div class="f"><label>Тематика контенту</label><select id="fCat" multiple></select>
+    <div class="hint"><a href="#" class="reset" data-for="fCat">показати всі</a></div></div>
+  <div class="f"><label>Мова</label><select id="fLang" multiple></select>
+    <div class="hint"><a href="#" class="reset" data-for="fLang">показати всі</a></div></div>
+  <div class="f"><label>Оцінка якості</label>
+    <select id="fQual">
+      <option value="0">будь-яка</option><option value="5">тільки 5 ★</option>
+      <option value="4">4 ★ і вище</option><option value="3">3 ★ і вище</option>
+      <option value="2">2 ★ і нижче (ризик)</option><option value="1">тільки 1 ★</option>
+    </select></div>
+  <div class="f"><label>Сер. перегляди / міс — від</label><input type="number" id="fViews" placeholder="0" min="0" step="1000"></div>
+  <div class="f"><label>Статус у списках</label>
+    <select id="fStatus"><option value="">усі</option><option value="white">whitelist</option><option value="black">blacklist</option><option value="none">без статусу</option></select></div>
+</div>
 
-        <div class="filter-group">
-          <label>КРАЇНА ПОХОДЖЕННЯ</label>
-          <select id="country-filter" multiple size="4">
-            <option value="" selected>Усі країни</option>
-          </select>
-          <span class="filter-hint">Ctrl / ⌘ + клик — показати всі</span>
-        </div>
+<div class="panel toolbar">
+  <div class="count"><b id="cShown">0</b> з <span id="cTotal">0</span> каналів · обрано <b id="cSel">0</b></div>
+  <div class="spacer"></div>
+  <button id="bSelAll">Обрати всі відфільтровані</button>
+  <button id="bClear">Зняти виділення</button>
+  <button id="bCsv">↓ CSV</button>
+  <button id="bXlsx" class="primary">↓ XLSX</button>
+</div>
 
-        <div class="filter-group">
-          <label>ТИП КАНАЛУ</label>
-          <select id="type-filter" multiple size="4">
-            <option value="" selected>Усі типи</option>
-          </select>
-          <span class="filter-hint">показати всі</span>
-        </div>
+<div class="panel tablewrap">
+  <div class="loading" id="loading">Завантаження каналів…</div>
+  <table id="tbl" style="display:none">
+    <thead><tr>
+      <th style="width:34px"><input type="checkbox" id="chAll"></th>
+      <th class="sortable" data-s="name">Канал</th>
+      <th class="sortable" data-s="country">Країна</th>
+      <th class="sortable" data-s="type">Тип</th>
+      <th class="sortable" data-s="category">Тематика</th>
+      <th class="sortable" data-s="language">Мова</th>
+      <th class="sortable num" data-s="subscribers">Підписники</th>
+      <th class="sortable num" data-s="avg_views_month">Сер. перегляди / міс</th>
+      <th class="sortable num" data-s="videos_month">Відео / міс</th>
+      <th class="sortable" data-s="quality">Якість</th>
+      <th class="sortable" data-s="status">Статус</th>
+    </tr></thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none">Нічого не знайдено — спробуй послабити фільтри</div>
+</div>
 
-        <div class="filter-group">
-          <label>ТЕМАТИКА КОНТЕНТУ</label>
-          <select id="category-filter" multiple size="4">
-            <option value="" selected>Усі тематики</option>
-          </select>
-          <span class="filter-hint">показати всі</span>
-        </div>
+<div class="foot">Дані з API /api/channels (Cloudflare D1). Експорт містить назву, ID та посилання youtube.com/channel/UC… — формат для Google Ads placements.</div>
+</div>
+<div class="toast" id="toast"></div>
 
-        <div class="filter-group">
-          <label>МОВА</label>
-          <select id="language-filter" multiple size="4">
-            <option value="" selected>Усі мови</option>
-          </select>
-          <span class="filter-hint">показати всі</span>
-        </div>
+<script>
+const COUNTRIES={UA:'🇺🇦 Україна',PL:'🇵🇱 Польща',US:'🇺🇸 США',GB:'🇬🇧 Британія',DE:'🇩🇪 Німеччина',RU:'🇷🇺 росія',KZ:'🇰🇿 Казахстан',XX:'🏳️ Невідомо'};
+const LANGS={uk:'Українська',ru:'російська',en:'English',pl:'Polski',de:'Deutsch',kk:'Qazaq',xx:'—'};
+const PALETTE=['#b8522e','#3f7d4e','#2f6a8f','#8a5ba8','#b5821f','#a03d5c','#4a6f8a','#6b7f3a'];
+const $=s=>document.querySelector(s);
+const fmt=n=>Number(n||0).toLocaleString('uk-UA').replace(/\u00a0/g,' ');
+const chUrl=d=>'https://www.youtube.com/channel/'+d.id;
 
-        <div class="filter-group">
-          <label>ОЦІНКА ЯКОСТІ</label>
-          <select id="quality-filter">
-            <option value="">Будь-яка</option>
-            <option value="5">5 зірок</option>
-            <option value="4">4+ зірки</option>
-            <option value="3">3+ зірки</option>
-          </select>
-        </div>
+let DATA=[];
+const sel=new Set();
+let sort={key:'avg_views_month',dir:-1};
 
-        <div class="filter-group">
-          <label>СЕР. ПЕРЕГЛЯДИ / МІС — ВІД</label>
-          <input type="number" id="views-min-input" placeholder="0" />
-        </div>
-      </div>
+async function load(){
+  try{
+    const res=await fetch('/api/channels');
+    DATA=await res.json();
+  }catch(e){
+    DATA=[];
+    $('#loading').textContent='Не вдалося завантажити дані з /api/channels';
+    return;
+  }
+  $('#loading').style.display='none';
+  $('#tbl').style.display='table';
+  buildFilterOptions();
+  render();
+}
 
-      <div class="filter-group status-group">
-        <label>СТАТУС У СПИСКАХ</label>
-        <select id="status-filter">
-          <option value="">Усі</option>
-          <option value="white">Whitelist</option>
-          <option value="black">Blacklist</option>
-          <option value="new">New</option>
-        </select>
-      </div>
-    </section>
+function buildFilterOptions(){
+  const uniq=k=>[...new Set(DATA.map(d=>d[k]).filter(Boolean))].sort();
+  const fill=(el,vals,label)=>el.innerHTML=vals.map(v=>`<option value="${v}">${label?label(v):v}</option>`).join('');
+  fill($('#fCountry'),uniq('country'),v=>COUNTRIES[v]||v);
+  fill($('#fType'),uniq('type'));
+  fill($('#fCat'),uniq('category'));
+  fill($('#fLang'),uniq('language'),v=>LANGS[v]||v);
+}
 
-    <!-- ПАНЕЛЬ ДІЙ -->
-    <section class="actions-bar">
-      <div class="counter-info">
-        <span id="rendered-count">0</span> з <span id="total-count">0</span> каналів — обрано <strong id="selected-count">0</strong>
-      </div>
-      <div class="buttons-group">
-        <button id="select-all-btn" class="btn btn-secondary">Обрати всі відфільтровані</button>
-        <button id="deselect-all-btn" class="btn btn-secondary">Зняти виділення</button>
-        <button id="export-csv-btn" class="btn btn-primary">↓ CSV</button>
-        <button id="export-xlsx-btn" class="btn btn-primary">↓ XLSX</button>
-      </div>
-    </section>
+const multiVals=el=>[...el.selectedOptions].map(o=>o.value);
 
-    <!-- ТАБЛИЦЯ -->
-    <main class="table-container">
-      <table id="channels-table">
-        <thead>
-          <tr>
-            <th class="col-checkbox"><input type="checkbox" id="master-checkbox" /></th>
-            <th class="col-channel">КАНАЛ</th>
-            <th class="col-country">КРАЇНА</th>
-            <th class="col-type">ТИП</th>
-            <th class="col-category">ТЕМАТИКА</th>
-            <th class="col-lang">МОВА</th>
-            <th class="col-subs">ПІДПИСНИКИ</th>
-            <th class="col-views">СЕР. ПЕРЕГЛЯДИ / МІС</th>
-            <th class="col-videos">ВІДЕО / МІС</th>
-            <th class="col-quality">ЯКІСТЬ</th>
-            <th class="col-status">СТАТУС</th>
-          </tr>
-        </thead>
-        <tbody id="channels-tbody">
-          <!-- Динамічні рядки -->
-        </tbody>
-      </table>
-    </main>
-  </div>
+function filtered(){
+  const q=$('#q').value.trim().toLowerCase();
+  const co=multiVals($('#fCountry')),ty=multiVals($('#fType')),ca=multiVals($('#fCat')),la=multiVals($('#fLang'));
+  const qual=+$('#fQual').value, minV=+$('#fViews').value||0, st=$('#fStatus').value;
+  return DATA.filter(d=>{
+    if(q&&!(d.name.toLowerCase().includes(q)||d.id.toLowerCase().includes(q)))return false;
+    if(co.length&&!co.includes(d.country))return false;
+    if(ty.length&&!ty.includes(d.type))return false;
+    if(ca.length&&!ca.includes(d.category))return false;
+    if(la.length&&!la.includes(d.language))return false;
+    if(qual===5&&d.quality!==5)return false;
+    if(qual===4&&d.quality<4)return false;
+    if(qual===3&&d.quality<3)return false;
+    if(qual===2&&d.quality>2)return false;
+    if(qual===1&&d.quality!==1)return false;
+    if((d.avg_views_month||0)<minV)return false;
+    if(st==='white'&&d.status!=='white')return false;
+    if(st==='black'&&d.status!=='black')return false;
+    if(st==='none'&&d.status!=='')return false;
+    return true;
+  }).sort((a,b)=>{
+    const k=sort.key;let x=a[k],y=b[k];
+    if(k==='status'){x=x||'zz';y=y||'zz';}
+    if(typeof x==='string')return x.localeCompare(y,'uk')*sort.dir;
+    return ((x||0)-(y||0))*sort.dir;
+  });
+}
 
-  <script src="app.js"></script>
+function starsHtml(n){
+  const cls=n>=4?'s-hi':n===3?'s-mid':'s-lo';
+  let s='';for(let i=1;i<=5;i++)s+=i<=n?`<span class="${cls}">★</span>`:'<span class="off">★</span>';
+  return s;
+}
+function statusHtml(s){
+  if(s==='white')return '<button class="status st-w">whitelist</button>';
+  if(s==='black')return '<button class="status st-b">blacklist</button>';
+  return '<button class="status st-n">— додати</button>';
+}
+function avatar(name,i){
+  const c=PALETTE[i%PALETTE.length];
+  const ini=name.split(' ').filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
+  return `<div class="ava" style="background:${c}">${ini}</div>`;
+}
+
+function render(){
+  const rows=filtered();
+  $('#tb').innerHTML=rows.map((d,i)=>`
+    <tr data-id="${d.id}" class="${sel.has(d.id)?'sel':''}">
+      <td><input type="checkbox" ${sel.has(d.id)?'checked':''}></td>
+      <td><div class="ch">${avatar(d.name,i)}<div>
+        <div class="cname"><a href="${chUrl(d)}" target="_blank" rel="noopener noreferrer">${d.name}</a></div>
+        <div class="cid">${d.id}</div></div></div></td>
+      <td><span class="tag">${COUNTRIES[d.country]||d.country}</span></td>
+      <td><span class="tag">${d.type||'—'}</span></td>
+      <td>${d.category||'—'}</td>
+      <td>${LANGS[d.language]||d.language||'—'}</td>
+      <td class="num">${fmt(d.subscribers)}</td>
+      <td class="num">${fmt(d.avg_views_month)}</td>
+      <td class="num">${d.videos_month||0}</td>
+      <td><span class="stars">${starsHtml(d.quality)}</span></td>
+      <td>${statusHtml(d.status)}</td>
+    </tr>`).join('');
+  $('#empty').style.display=rows.length?'none':'block';
+  $('#tbl').style.display=rows.length?'table':'none';
+  $('#cShown').textContent=rows.length;
+  $('#cTotal').textContent=DATA.length;
+  $('#cSel').textContent=sel.size;
+  $('#chAll').checked=rows.length>0&&rows.every(d=>sel.has(d.id));
+  $('#bCsv').disabled=$('#bXlsx').disabled=sel.size===0;
+}
+
+async function patchChannel(id, body){
+  const res=await fetch('/api/channels/'+encodeURIComponent(id), {
+    method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  if(!res.ok) toast('Не вдалося зберегти зміну');
+}
+
+['#q','#fCountry','#fType','#fCat','#fLang','#fQual','#fViews','#fStatus'].forEach(s=>$(s).addEventListener('input',render));
+
+document.querySelectorAll('a.reset').forEach(a=>a.addEventListener('click',e=>{
+  e.preventDefault();
+  [...document.getElementById(a.dataset.for).options].forEach(o=>o.selected=false);
+  render();
+}));
+document.querySelectorAll('select[multiple]').forEach(sel=>{
+  sel.addEventListener('mousedown',e=>{
+    if(e.target.tagName!=='OPTION')return;
+    e.preventDefault(); e.target.selected=!e.target.selected;
+    sel.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+});
+
+document.addEventListener('click',e=>{
+  const th=e.target.closest('th.sortable'); if(th){
+    const k=th.dataset.s;
+    sort = sort.key===k ? {key:k,dir:-sort.dir} : {key:k,dir:['name','category','type','language','country'].includes(k)?1:-1};
+    render(); return;
+  }
+});
+
+$('#tb').addEventListener('click',e=>{
+  const tr=e.target.closest('tr'); if(!tr) return;
+  const d=DATA.find(x=>x.id===tr.dataset.id);
+  if(e.target.closest('.cname a')) return;
+  if(e.target.matches('input[type=checkbox]')){ sel.has(d.id)?sel.delete(d.id):sel.add(d.id); return render(); }
+  if(e.target.closest('.stars')){ d.quality=d.quality>=5?1:d.quality+1; render(); return patchChannel(d.id,{quality:d.quality}); }
+  if(e.target.closest('.status')){ d.status=d.status===''?'white':d.status==='white'?'black':''; render(); return patchChannel(d.id,{status:d.status}); }
+  sel.has(d.id)?sel.delete(d.id):sel.add(d.id); render();
+});
+
+$('#chAll').addEventListener('change',e=>{
+  const rows=filtered();
+  e.target.checked?rows.forEach(d=>sel.add(d.id)):rows.forEach(d=>sel.delete(d.id));
+  render();
+});
+$('#bSelAll').addEventListener('click',()=>{filtered().forEach(d=>sel.add(d.id));render();});
+$('#bClear').addEventListener('click',()=>{sel.clear();render();});
+
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600);}
+
+function downloadBlob(filename, blob){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  toast('Файл збережено: '+filename);
+}
+
+const HEAD=['Channel Name','Channel ID','Placement URL','Country','Type','Category','Language','Subscribers','Avg views / month','Videos / month','Quality (1-5)','List status'];
+function rowsOut(){
+  return DATA.filter(d=>sel.has(d.id)).map(d=>[
+    d.name, d.id, chUrl(d), COUNTRIES[d.country]?.replace(/^\S+\s/,'')||d.country, d.type, d.category,
+    LANGS[d.language]||d.language, d.subscribers, d.avg_views_month, d.videos_month, d.quality, d.status||'—'
+  ]);
+}
+$('#bCsv').addEventListener('click',()=>{
+  const esc=v=>`"${String(v).replace(/"/g,'""')}"`;
+  const csv='\uFEFF'+[HEAD,...rowsOut()].map(r=>r.map(esc).join(',')).join('\r\n');
+  downloadBlob(`yt-placements-${sel.size}.csv`, new Blob([csv],{type:'text/csv;charset=utf-8'}));
+});
+$('#bXlsx').addEventListener('click',()=>{
+  const ws=XLSX.utils.aoa_to_sheet([HEAD,...rowsOut()]);
+  ws['!cols']=[{wch:30},{wch:26},{wch:46},{wch:12},{wch:12},{wch:22},{wch:14},{wch:13},{wch:18},{wch:12},{wch:12},{wch:12}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Placements');
+  const buf=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+  downloadBlob(`yt-placements-${sel.size}.xlsx`, new Blob([buf],{type:'application/octet-stream'}));
+});
+
+load();
+</script>
 </body>
 </html>
