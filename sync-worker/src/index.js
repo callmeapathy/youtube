@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 
-const BATCH_LIMIT = 40; // Количество каналов для обогащения через YouTube API за 1 запуск
+const BATCH_LIMIT = 100; // Сколько каналов обогащать через YouTube API за 1 запуск
 
 export default {
   async fetch(request, env) {
@@ -25,7 +25,7 @@ async function syncChannels(env) {
   };
 
   // -------------------------------------------------------------
-  // ЭТАП 1: Пакетный импорт из Google Sheets в D1
+  // ЭТАП 1: Безопасный пакетный импорт из Google Sheets
   // -------------------------------------------------------------
   if (env.GOOGLE_SHEET_CSV_URL) {
     try {
@@ -39,7 +39,12 @@ async function syncChannels(env) {
 
       const batchStatements = [];
 
-      for (const row of rows) {
+      // Ограничиваем количество обработанных строк за один прогон (максимум 500 штук),
+      // чтобы не упереться в лимиты Cloudflare Worker Invocation
+      const maxRowsToProcess = Math.min(rows.length, 500);
+
+      for (let i = 0; i < maxRowsToProcess; i++) {
+        const row = rows[i];
         const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
         const rawStatus = row['status'] || row['статус'] || 'black';
         const initialName = row['Виключення'] || row['name'] || 'Pending...';
@@ -57,14 +62,13 @@ async function syncChannels(env) {
             VALUES (?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
               status = excluded.status,
-              name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END,
-              updated_at = datetime('now')
+              name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END
           `).bind(channelId, initialName, statusValue)
         );
       }
 
-      // Выполняем запись пачками по 50 штук (без превышения подзапросов Cloudflare)
-      const CHUNK_SIZE = 50;
+      // Выполняем запись крупными пакетами по 100 операций за раз
+      const CHUNK_SIZE = 100;
       for (let i = 0; i < batchStatements.length; i += CHUNK_SIZE) {
         const chunk = batchStatements.slice(i, i + CHUNK_SIZE);
         await env.DB.batch(chunk);
@@ -79,7 +83,7 @@ async function syncChannels(env) {
   }
 
   // -------------------------------------------------------------
-  // ЭТАП 2: Подтягивание названий, страны, языка и метрик с YouTube API
+  // ЭТАП 2: Заполнение названий, страны, языка и подписчиков с YouTube API
   // -------------------------------------------------------------
   const apiKey = env.YOUTUBE_API_KEY;
   if (!apiKey) {
@@ -88,43 +92,60 @@ async function syncChannels(env) {
   }
 
   try {
+    // Берем каналы, у которых еще нет настоящего имени или которые давно не обновлялись
     const { results: staleChannels } = await env.DB.prepare(
       `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
     ).bind(BATCH_LIMIT).all();
 
-    for (const { id } of staleChannels) {
-      try {
-        const stats = await fetchChannelStats(id, apiKey);
-        if (!stats) continue;
+    if (staleChannels && staleChannels.length > 0) {
+      const channelIds = staleChannels.map(c => c.id);
 
-        await env.DB.prepare(`
-          UPDATE channels
-          SET 
-            name = COALESCE(NULLIF(?, ''), name),
-            country = COALESCE(NULLIF(?, ''), country),
-            language = COALESCE(NULLIF(?, ''), language),
-            subscribers = ?, 
-            avg_views_month = ?, 
-            videos_month = ?, 
-            updated_at = datetime('now')
-          WHERE id = ?
-        `).bind(
-          stats.name,
-          stats.country,
-          stats.language,
-          stats.subscribers,
-          stats.avgViewsMonth,
-          stats.videosMonth,
-          id
-        ).run();
+      // Запрашиваем данные пачками по 50 каналов за один вызов API
+      for (let i = 0; i < channelIds.length; i += 50) {
+        const chunkIds = channelIds.slice(i, i + 50);
+        
+        const chRes = await fetch(
+          `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${chunkIds.join(',')}&key=${apiKey}`
+        );
+        const chData = await chRes.json();
 
-        result.ytUpdated++;
-      } catch (e) {
-        result.errors.push({ step: "youtube_sync", id, error: String(e) });
+        if (chData.items && chData.items.length > 0) {
+          const updateBatch = [];
+
+          for (const item of chData.items) {
+            const id = item.id;
+            const snippet = item.snippet || {};
+            const stats = item.statistics || {};
+
+            const name = snippet.title || 'Unknown Channel';
+            const country = snippet.country || 'XX';
+            const language = snippet.defaultLanguage || snippet.audioLanguage || 'uk';
+            const subscribers = Number(stats.subscriberCount || 0);
+
+            updateBatch.push(
+              env.DB.prepare(`
+                UPDATE channels
+                SET 
+                  name = COALESCE(NULLIF(?, ''), name),
+                  country = COALESCE(NULLIF(?, ''), country),
+                  language = COALESCE(NULLIF(?, ''), language),
+                  subscribers = ?,
+                  updated_at = datetime('now')
+                WHERE id = ?
+              `).bind(name, country, language, subscribers, id)
+            );
+          }
+
+          if (updateBatch.length > 0) {
+            await env.DB.batch(updateBatch);
+            result.ytUpdated += updateBatch.length;
+          }
+        }
       }
     }
+
   } catch (e) {
-    result.errors.push({ step: "youtube_sync_init", error: String(e) });
+    result.errors.push({ step: "youtube_sync_batch", error: String(e) });
   }
 
   return result;
@@ -134,42 +155,4 @@ function parseChannelId(url) {
   if (!url) return null;
   const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
   return match ? match[1] : null;
-}
-
-async function fetchChannelStats(channelId, apiKey) {
-  const chRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelId}&key=${apiKey}`
-  );
-  const chData = await chRes.json();
-  const channel = chData.items?.[0];
-  if (!channel) return null;
-
-  const snippet = channel.snippet || {};
-  const stats = channel.statistics || {};
-
-  const name = snippet.title || '';
-  const country = snippet.country || '';
-  const language = snippet.defaultLanguage || snippet.audioLanguage || '';
-  const subscribers = Number(stats.subscriberCount || 0);
-
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const searchRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
-    `&publishedAfter=${since}&type=video&order=date&maxResults=50&key=${apiKey}`
-  );
-  const searchData = await searchRes.json();
-  const videoIds = (searchData.items || []).map(i => i.id?.videoId).filter(Boolean);
-
-  if (videoIds.length === 0) {
-    return { name, country, language, subscribers, avgViewsMonth: 0, videosMonth: 0 };
-  }
-
-  const videosRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds.join(",")}&key=${apiKey}`
-  );
-  const videosData = await videosRes.json();
-  const views = (videosData.items || []).map(v => Number(v.statistics?.viewCount || 0));
-  const avgViewsMonth = views.length ? Math.round(views.reduce((a, b) => a + b, 0) / views.length) : 0;
-
-  return { name, country, language, subscribers, avgViewsMonth, videosMonth: videoIds.length };
 }
