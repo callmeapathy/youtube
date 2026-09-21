@@ -1,24 +1,4 @@
-import Papa from 'papaparse';
-
 const BATCH_LIMIT = 100;
-
-// Маппинг категорий YouTube API ID -> Название на украинском/русском
-const YOUTUBE_CATEGORIES = {
-  "1": "Фільми та анімація",
-  "2": "Авто та транспорт",
-  "10": "Музика",
-  "15": "Tварини",
-  "17": "Спорт",
-  "19": "Подорожі",
-  "20": "Ігри",
-  "22": "Блоги",
-  "23": "Гумор",
-  "24": "Розваги",
-  "25": "Новини та політика",
-  "26": "Стиль та мода",
-  "27": "Освіта",
-  "28": "Наука та технології"
-};
 
 export default {
   async fetch(request, env) {
@@ -54,40 +34,36 @@ async function syncChannels(env) {
   }
 
   try {
-    // 1. Загружаем Google Sheet
+    // 1. Быстрая загрузка Google Sheet
     const sheetRes = await fetch(env.GOOGLE_SHEET_CSV_URL);
     const csvText = await sheetRes.text();
 
-    const { data: rows } = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true
-    });
-
-    // 2. Собираем уникальные каналы из таблицы (id -> { status, customType, customCategory })
+    // 2. Быстрый легкий парсинг строк вместо тяжелого PapaParse
+    const lines = csvText.split(/\r?\n/);
     const pendingChannels = new Map();
 
-    for (const row of rows) {
-      const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
-      const rawStatus = row['status'] || row['статус'] || 'black';
-      const customType = row['type'] || row['тип'] || '';
-      const customCategory = row['category'] || row['категорія'] || '';
+    // Обрабатываем порцию строк, чтобы не привышать CPU Limit
+    const maxLines = Math.min(lines.length, 15000);
 
-      if (!rawUrl) continue;
+    for (let i = 1; i < maxLines; i++) {
+      const line = lines[i];
+      if (!line) continue;
 
-      const channelId = parseChannelId(rawUrl);
+      const channelId = parseChannelId(line);
       if (!channelId) continue;
 
-      const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
-      pendingChannels.set(channelId, { status: statusValue, customType, customCategory });
+      // Быстрое определение статуса из строки
+      const statusValue = line.toLowerCase().includes('white') ? 'white' : 'black';
+      pendingChannels.set(channelId, statusValue);
     }
 
     result.processedFromSheets = pendingChannels.size;
 
-    // 3. Достаем существующие ID из D1
+    // 3. Сверяем с уже имеющимися каналами в D1
     const { results: existingRows } = await env.DB.prepare("SELECT id FROM channels").all();
     const existingIds = new Set((existingRows || []).map(r => r.id));
 
-    // 4. Фильтруем только новые (необработанные) каналы
+    // 4. Берем только те каналы, которых еще нет в D1
     const unparsedChannelIds = Array.from(pendingChannels.keys())
       .filter(id => !existingIds.has(id))
       .slice(0, BATCH_LIMIT);
@@ -104,7 +80,7 @@ async function syncChannels(env) {
       return result;
     }
 
-    // 5. Пакетный запрос в YouTube API
+    // 5. Запрос к YouTube API
     const updateBatch = [];
 
     for (let i = 0; i < targetIds.length; i += 50) {
@@ -129,14 +105,10 @@ async function syncChannels(env) {
         const country = snippet.country || 'XX';
         const language = snippet.defaultLanguage || snippet.audioLanguage || 'uk';
         const subscribers = Number(stats.subscriberCount || 0);
-        
-        const sheetData = pendingChannels.get(id) || { status: 'black', customType: '', customCategory: '' };
+        const status = pendingChannels.get(id) || 'black';
 
-        // Определяем ТИП канала
-        const type = sheetData.customType || detectChannelType(name, snippet.description || '');
-
-        // Определяем КАТЕГОРИЮ канала
-        const category = sheetData.customCategory || detectChannelCategory(topicDetails);
+        const type = detectChannelType(name, snippet.description || '');
+        const category = detectChannelCategory(topicDetails);
 
         updateBatch.push(
           env.DB.prepare(`
@@ -151,12 +123,11 @@ async function syncChannels(env) {
               subscribers = excluded.subscribers,
               status = excluded.status,
               updated_at = datetime('now')
-          `).bind(id, name, country, type, category, language, subscribers, sheetData.status)
+          `).bind(id, name, country, type, category, language, subscribers, status)
         );
       }
     }
 
-    // 6. Сохраняем все обновленные записи в D1
     if (updateBatch.length > 0) {
       await env.DB.batch(updateBatch);
       result.addedOrUpdatedInDB = updateBatch.length;
@@ -169,16 +140,14 @@ async function syncChannels(env) {
   return result;
 }
 
-function parseChannelId(url) {
-  if (!url) return null;
-  const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
+function parseChannelId(text) {
+  if (!text) return null;
+  const match = text.match(/channel\/([\w-]+)/) || text.match(/@([\w-]+)/);
   return match ? match[1] : null;
 }
 
-// Автоматическое определение типа канала
 function detectChannelType(title, description) {
   const text = (title + " " + description).toLowerCase();
-  
   if (/tv|тв|новини|новости|телеканал|радио|radio|24|канал|студія|studio|production|продакшн/.test(text)) {
     return 'Медіа';
   }
@@ -188,10 +157,9 @@ function detectChannelType(title, description) {
   if (/шоу|шоубіз|фильмы|кино|мультики|анекдоты|подборка|топ/.test(text)) {
     return 'Паблік';
   }
-  return 'Блогер'; // По умолчанию
+  return 'Блогер';
 }
 
-// Автоматическое определение категории по TopicDetails из YouTube API
 function detectChannelCategory(topicDetails) {
   const categoriesMap = {
     'Gaming': 'Ігри',
@@ -214,5 +182,5 @@ function detectChannelCategory(topicDetails) {
     }
   }
 
-  return 'Розваги'; // Категория по умолчанию
+  return 'Розваги';
 }
