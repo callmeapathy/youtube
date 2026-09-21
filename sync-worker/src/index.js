@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 
-const BATCH_LIMIT = 40;
+const BATCH_LIMIT = 40; // Количество каналов для обогащения данными из YouTube API за один прогон
 
 export default {
   async fetch(request, env) {
@@ -25,7 +25,7 @@ async function syncChannels(env) {
   };
 
   // -------------------------------------------------------------
-  // ЕТАП 1: Читаємо Google Sheet (посилання + статус) та додаємо нові ID
+  // ЕТАП 1: Читаємо Google Sheet (посилання + статус) та додаємо ID в D1
   // -------------------------------------------------------------
   if (env.GOOGLE_SHEET_CSV_URL) {
     try {
@@ -38,10 +38,11 @@ async function syncChannels(env) {
       });
 
       for (const row of rows) {
-        // Беремо посилання з Google Таблиці
+        // Беремо посилання та название/статус із твоєї Google Таблиці
         const rawUrl = row['URL-адреса місця розташування'] || row['url'] || row['URL'] || Object.values(row)[0];
-        // Статус з таблиці (якщо є колонка "status" / "статус" / "Виключення")
-        const rawStatus = row['status'] || row['статус'] || row['Виключення'] || 'black';
+        const rawStatus = row['status'] || row['статус'] || 'black';
+        // Обязательно передаем name (из колонки "Виключення" или временно ID), чтобы не было NOT NULL ошибки в SQLite
+        const initialName = row['Виключення'] || row['name'] || 'Pending...';
         
         if (!rawUrl) continue;
 
@@ -50,14 +51,15 @@ async function syncChannels(env) {
 
         const statusValue = String(rawStatus).trim().toLowerCase() === 'white' ? 'white' : 'black';
 
-        // Додаємо новий канал в базу D1 з мінімальними даними (назву й метрики заповнить YouTube API нижче)
+        // Сохраняем канал в базу D1
         await env.DB.prepare(`
-          INSERT INTO channels (id, status, source, created_at, updated_at)
-          VALUES (?, ?, 'sheet_import', datetime('now'), datetime('now'))
+          INSERT INTO channels (id, name, status, source, created_at, updated_at)
+          VALUES (?, ?, ?, 'sheet_import', datetime('now'), datetime('now'))
           ON CONFLICT(id) DO UPDATE SET
             status = excluded.status,
+            name = CASE WHEN channels.name IS NULL OR channels.name = 'Pending...' THEN excluded.name ELSE channels.name END,
             updated_at = datetime('now')
-        `).bind(channelId, statusValue).run();
+        `).bind(channelId, initialName, statusValue).run();
 
         result.sheetsImported++;
       }
@@ -78,7 +80,7 @@ async function syncChannels(env) {
   }
 
   try {
-    // Беремо канали, які давно не оновлювалися або у яких немає назви
+    // Выбираем каналы, которые дольше всего не обновлялись
     const { results: staleChannels } = await env.DB.prepare(
       `SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?`
     ).bind(BATCH_LIMIT).all();
@@ -88,7 +90,7 @@ async function syncChannels(env) {
         const stats = await fetchChannelStats(id, apiKey);
         if (!stats) continue;
 
-        // Заповнюємо name, country, language, subscribers, avg_views_month, videos_month
+        // Заполняем name, country, language, subscribers, avg_views_month, videos_month в D1
         await env.DB.prepare(`
           UPDATE channels
           SET 
@@ -122,15 +124,17 @@ async function syncChannels(env) {
   return result;
 }
 
+// Извлечение ID канала из ссылки youtube.com/channel/UC...
 function parseChannelId(url) {
   if (!url) return null;
   const match = url.match(/channel\/([\w-]+)/) || url.match(/@([\w-]+)/);
   return match ? match[1] : null;
 }
 
+// Запрос данных из YouTube Data API v3
 async function fetchChannelStats(channelId, apiKey) {
   const chRes = await fetch(
-    `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet,brandingSettings&id=${channelId}&key=${apiKey}`
+    `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelId}&key=${apiKey}`
   );
   const chData = await chRes.json();
   const channel = chData.items?.[0];
@@ -144,7 +148,7 @@ async function fetchChannelStats(channelId, apiKey) {
   const language = snippet.defaultLanguage || snippet.audioLanguage || '';
   const subscribers = Number(stats.subscriberCount || 0);
 
-  // Пошук відео за останні 30 днів для розрахунку середніх переглядів
+  // Поиск видео за последние 30 дней для расчета средних просмотров
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const searchRes = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
