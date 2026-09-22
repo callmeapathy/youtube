@@ -6,25 +6,22 @@
  *  ФАЗА 1 — DISCOVER. Якщо задано env.GOOGLE_SHEET_CSV_URL, читаємо аркуш
  *  (він має бути опублікований як CSV: File → Share → Publish to web → CSV),
  *  дістаємо з нього посилання на канали + позначку white/black, і додаємо
- *  в D1 ті, яких там ще немає. Дорога частина тут — розпізнавання @handle
- *  в реальний channelId (1 юніт API за кожен), тому кількість нових рядків
- *  за прогін обмежена DISCOVER_LIMIT.
+ *  в D1 ті, яких там ще немає.
  *
  *  ФАЗА 2 — REFRESH. Для каналів, які вже є в базі (найстаріші за
  *  updated_at — першими), рахуємо чесні "середні перегляди за 30 днів"
- *  через search.list + videos.list. Це найдорожча частина (100 юнитів
- *  за search.list), тому кількість за прогін обмежена REFRESH_LIMIT.
+ *  через search.list + videos.list.
  *
- * Квота YouTube Data API — 10 000 юнитів/добу:
- *   DISCOVER_LIMIT=25  → ~1-2 юніта на channels.list (батчами по 50)
- *                         + до 25 юнитів на резолв @handle
- *   REFRESH_LIMIT=40   → 40 × ~101 юніт (search.list + videos.list) ≈ 4040
- *   Разом ≈ 4100 юнитів за прогін — з запасом навіть якщо запускати
- *   вручну кілька разів на день поверх щоденного cron.
+ * ГОЛОВНЕ ОБМЕЖЕННЯ ТУТ — не квота YouTube API (10 000 юнитів/добу, її
+ * вистачає з великим запасом), а ліміт самого Cloudflare Workers на
+ * безкоштовному тарифі: один виклик воркера може зробити максимум 50
+ * зовнішніх запитів (subrequests) сумарно. Тому обидві фази рахують
+ * запити в один спільний бюджет (SUBREQUEST_BUDGET) і зупиняються, не
+ * долітаючи до ліміту — решта необроблених каналів просто чекають
+ * наступного запуску (cron щодня, або ручний GET /run коли завгодно).
  */
-
-const DISCOVER_LIMIT = 25;
-const REFRESH_LIMIT = 40;
+const SUBREQUEST_BUDGET = 45; // залишаємо запас від жорсткого ліміту 50
+const DISCOVER_BUDGET = 12;   // скільки з бюджету віддаємо під пошук нових каналів
 
 const TYPE_RULES = [
   { type: "Медіа", re: /новини|новости|тв|телеканал|радіо|радио|канал\s?24|студі[яю]|production|продакшн/i },
@@ -66,23 +63,32 @@ async function runSync(env) {
     return { error: "YOUTUBE_API_KEY secret is not set" };
   }
 
-  const report = { discover: null, refresh: null };
+  const budget = { used: 0, limit: SUBREQUEST_BUDGET };
+  const report = { discover: null, refresh: null, subrequestBudget: SUBREQUEST_BUDGET };
 
   if (env.GOOGLE_SHEET_CSV_URL) {
-    report.discover = await discoverFromSheet(env, apiKey);
+    report.discover = await discoverFromSheet(env, apiKey, budget);
   } else {
     report.discover = { skipped: true, reason: "GOOGLE_SHEET_CSV_URL secret is not set" };
   }
 
-  report.refresh = await refreshStaleChannels(env, apiKey);
+  report.refresh = await refreshStaleChannels(env, apiKey, budget);
+  report.subrequestsUsed = budget.used;
 
   return report;
 }
 
+/** fetch, що рахує сам себе в спільний бюджет. Повертає null, якщо бюджет вичерпано. */
+async function trackedFetch(budget, url) {
+  if (budget.used >= budget.limit) return null;
+  budget.used++;
+  return fetch(url);
+}
+
 /* ---------------------------- ФАЗА 1: DISCOVER --------------------------- */
 
-async function discoverFromSheet(env, apiKey) {
-  const res = await fetch(env.GOOGLE_SHEET_CSV_URL);
+async function discoverFromSheet(env, apiKey, budget) {
+  const res = await fetch(env.GOOGLE_SHEET_CSV_URL); // сама таблиця не входить в бюджет YouTube API
   if (!res.ok) {
     return { error: `sheet fetch failed: HTTP ${res.status}` };
   }
@@ -93,31 +99,31 @@ async function discoverFromSheet(env, apiKey) {
     return { foundInSheet: 0, newChannels: 0 };
   }
 
-  // Які з цих каналів вже є в D1 — щоб не витрачати квоту на них повторно
   const { results: existing } = await env.DB.prepare("SELECT id FROM channels").all();
   const existingIds = new Set((existing || []).map((r) => r.id));
 
-  const candidates = rows.filter((r) => !existingIds.has(r.ref)).slice(0, DISCOVER_LIMIT);
+  // Резервуємо частину спільного бюджету саме під discover, щоб refresh теж щось встиг
+  const discoverBudget = Math.min(DISCOVER_BUDGET, budget.limit - budget.used);
+  const candidates = rows.filter((r) => !existingIds.has(r.ref)).slice(0, discoverBudget);
   if (candidates.length === 0) {
     return { foundInSheet: rows.length, newChannels: 0, note: "all rows already in DB" };
   }
 
-  // @handle потрібно окремо резолвити в справжній channelId (1 юніт кожен)
   const resolved = [];
   for (const c of candidates) {
+    if (budget.used >= budget.limit) break;
     if (c.refType === "id") {
       resolved.push({ id: c.ref, status: c.status });
     } else {
-      const realId = await resolveHandle(c.ref, apiKey);
+      const realId = await resolveHandle(c.ref, apiKey, budget);
       if (realId) resolved.push({ id: realId, status: c.status });
     }
   }
   if (resolved.length === 0) {
-    return { foundInSheet: rows.length, newChannels: 0, note: "nothing resolved to a real channel id" };
+    return { foundInSheet: rows.length, newChannels: 0, note: "nothing resolved (or budget ran out)" };
   }
 
-  // channels.list батчами по 50 — дешево (1 юніт за виклик)
-  const basics = await fetchChannelsBasics(resolved.map((r) => r.id), apiKey);
+  const basics = await fetchChannelsBasics(resolved.map((r) => r.id), apiKey, budget);
   const statusById = new Map(resolved.map((r) => [r.id, r.status]));
 
   let inserted = 0;
@@ -166,21 +172,24 @@ function parseSheetRows(csvText) {
   return out.filter((r) => (seen.has(r.ref) ? false : (seen.add(r.ref), true)));
 }
 
-async function resolveHandle(handle, apiKey) {
-  const res = await fetch(
+async function resolveHandle(handle, apiKey, budget) {
+  const res = await trackedFetch(budget,
     `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${apiKey}`
   );
+  if (!res) return null;
   const data = await res.json();
   return data.items?.[0]?.id || null;
 }
 
-async function fetchChannelsBasics(ids, apiKey) {
+async function fetchChannelsBasics(ids, apiKey, budget) {
   const out = [];
   for (let i = 0; i < ids.length; i += 50) {
+    if (budget.used >= budget.limit) break;
     const chunk = ids.slice(i, i + 50);
-    const res = await fetch(
+    const res = await trackedFetch(budget,
       `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,topicDetails&id=${chunk.join(",")}&key=${apiKey}`
     );
+    if (!res) break;
     const data = await res.json();
     for (const item of data.items || []) {
       out.push({
@@ -215,10 +224,18 @@ function guessCategory(topicDetails) {
 
 /* ---------------------------- ФАЗА 2: REFRESH ----------------------------- */
 
-async function refreshStaleChannels(env, apiKey) {
+async function refreshStaleChannels(env, apiKey, budget) {
+  const remaining = budget.limit - budget.used;
+  const COST_PER_CHANNEL = 3; // channels.list + search.list + videos.list
+  const affordable = Math.max(0, Math.floor(remaining / COST_PER_CHANNEL));
+
+  if (affordable === 0) {
+    return { updated: 0, skipped: true, reason: "subrequest budget exhausted by discover phase" };
+  }
+
   const { results: stale } = await env.DB.prepare(
     "SELECT id FROM channels ORDER BY updated_at ASC LIMIT ?"
-  ).bind(REFRESH_LIMIT).all();
+  ).bind(affordable).all();
 
   if (!stale.length) {
     return { updated: 0, message: "no channels in DB yet" };
@@ -228,8 +245,9 @@ async function refreshStaleChannels(env, apiKey) {
   const errors = [];
 
   for (const { id } of stale) {
+    if (budget.limit - budget.used < COST_PER_CHANNEL) break; // не почнемо канал, який не докінчимо
     try {
-      const stats = await fetchMonthlyStats(id, apiKey);
+      const stats = await fetchMonthlyStats(id, apiKey, budget);
       if (!stats) continue;
 
       await env.DB.prepare(`
@@ -247,20 +265,22 @@ async function refreshStaleChannels(env, apiKey) {
   return { updated, total: stale.length, errors };
 }
 
-async function fetchMonthlyStats(channelId, apiKey) {
-  const chRes = await fetch(
+async function fetchMonthlyStats(channelId, apiKey, budget) {
+  const chRes = await trackedFetch(budget,
     `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${channelId}&key=${apiKey}`
   );
+  if (!chRes) return null;
   const chData = await chRes.json();
   const channel = chData.items?.[0];
   if (!channel) return null;
   const subscribers = Number(channel.statistics?.subscriberCount || 0);
 
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const searchRes = await fetch(
+  const searchRes = await trackedFetch(budget,
     `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}` +
     `&publishedAfter=${since}&type=video&order=date&maxResults=50&key=${apiKey}`
   );
+  if (!searchRes) return { subscribers, avgViewsMonth: 0, videosMonth: 0 };
   const searchData = await searchRes.json();
   const videoIds = (searchData.items || []).map((i) => i.id?.videoId).filter(Boolean);
 
@@ -268,9 +288,10 @@ async function fetchMonthlyStats(channelId, apiKey) {
     return { subscribers, avgViewsMonth: 0, videosMonth: 0 };
   }
 
-  const videosRes = await fetch(
+  const videosRes = await trackedFetch(budget,
     `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds.join(",")}&key=${apiKey}`
   );
+  if (!videosRes) return { subscribers, avgViewsMonth: 0, videosMonth: videoIds.length };
   const videosData = await videosRes.json();
   const views = (videosData.items || []).map((v) => Number(v.statistics?.viewCount || 0));
   const avgViewsMonth = views.length ? Math.round(views.reduce((a, b) => a + b, 0) / views.length) : 0;
