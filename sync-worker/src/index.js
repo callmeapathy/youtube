@@ -93,20 +93,20 @@ async function discoverFromSheet(env, apiKey, budget) {
     return { error: `sheet fetch failed: HTTP ${res.status}` };
   }
   const csvText = await res.text();
-  const rows = parseSheetRows(csvText);
-
-  if (rows.length === 0) {
-    return { foundInSheet: 0, newChannels: 0 };
-  }
 
   const { results: existing } = await env.DB.prepare("SELECT id FROM channels").all();
   const existingIds = new Set((existing || []).map((r) => r.id));
 
-  // Резервуємо частину спільного бюджету саме під discover, щоб refresh теж щось встиг
+  // Резервуємо частину спільного бюджету саме під discover
   const discoverBudget = Math.min(DISCOVER_BUDGET, budget.limit - budget.used);
-  const candidates = rows.filter((r) => !existingIds.has(r.ref)).slice(0, discoverBudget);
+
+  // ОДИН прохід по рядках: паримо і одразу фільтруємо, зупиняємось щойно
+  // набрали потрібну кількість НОВИХ кандидатів — не парсимо всі 200k+
+  // рядків заради жменьки нових, інакше впираємось у CPU-ліміт воркера.
+  const { candidates, totalScanned } = pickNewCandidates(csvText, existingIds, discoverBudget);
+
   if (candidates.length === 0) {
-    return { foundInSheet: rows.length, newChannels: 0, note: "all rows already in DB" };
+    return { totalRowsScanned: totalScanned, newChannels: 0, note: "no new channels found in the scanned portion" };
   }
 
   const resolved = [];
@@ -120,10 +120,10 @@ async function discoverFromSheet(env, apiKey, budget) {
     }
   }
   if (resolved.length === 0) {
-    return { foundInSheet: rows.length, newChannels: 0, note: "nothing resolved (or budget ran out)" };
+    return { totalRowsScanned: totalScanned, candidates: candidates.length, newChannels: 0, note: "nothing resolved (or budget ran out)" };
   }
 
-  const basics = await fetchChannelsBasics(resolved.map((r) => r.id), apiKey, budget);
+  const { basics, apiErrors } = await fetchChannelsBasics(resolved.map((r) => r.id), apiKey, budget);
   const statusById = new Map(resolved.map((r) => [r.id, r.status]));
 
   let inserted = 0;
@@ -142,23 +142,60 @@ async function discoverFromSheet(env, apiKey, budget) {
     inserted++;
   }
 
-  return { foundInSheet: rows.length, candidates: candidates.length, newChannels: inserted };
+  return {
+    totalRowsScanned: totalScanned,
+    candidates: candidates.length,
+    resolved: resolved.length,
+    newChannels: inserted,
+    apiErrors: apiErrors.length ? apiErrors : undefined,
+  };
 }
 
-/** Рядок Google Sheet → { ref, refType: 'id'|'handle', status }, або null якщо в рядку немає посилання на канал */
-function parseSheetRows(csvText) {
-  const lines = csvText.split(/\r?\n/).slice(1); // перший рядок — заголовки
+/**
+ * Один прохід по CSV: парсить рядок за рядком і одразу відкидає ті, що
+ * вже є в базі (existingIds) або повторюються в межах самого файлу.
+ * Зупиняється, щойно назбирав `limit` нових кандидатів — решту файлу
+ * навіть не чіпає. totalScanned показує, скільки рядків реально
+ * переглянули (корисно для діагностики).
+ */
+function pickNewCandidates(csvText, existingIds, limit) {
+  const seenInFile = new Set();
   const out = [];
-  for (const line of lines) {
+  let totalScanned = 0;
+
+  // Проста ручна розбивка по рядках без split() на весь текст одразу —
+  // split() на 200k+ рядків одразу виділяє величезний масив у пам'яті.
+  let start = csvText.indexOf("\n") + 1; // пропускаємо заголовок
+  const len = csvText.length;
+
+  while (start < len && out.length < limit) {
+    let end = csvText.indexOf("\n", start);
+    if (end === -1) end = len;
+    const line = csvText.slice(start, end);
+    start = end + 1;
     if (!line.trim()) continue;
+    totalScanned++;
 
-    const idMatch = line.match(/channel\/(UC[\w-]{22})/);
-    const handleMatch = line.match(/@([\w.-]+)/);
-
+    // channel/UC... завжди 22 символи після UC — швидка перевірка перед regex
+    const chIdx = line.indexOf("channel/UC");
     let ref = null, refType = null;
-    if (idMatch) { ref = idMatch[1]; refType = "id"; }
-    else if (handleMatch) { ref = "@" + handleMatch[1]; refType = "handle"; }
-    if (!ref) continue;
+    if (chIdx !== -1) {
+      ref = line.slice(chIdx + 8, chIdx + 8 + 24); // "UC" + 22 символи
+      if (/^UC[\w-]{22}$/.test(ref)) {
+        refType = "id";
+      } else {
+        ref = null;
+      }
+    }
+    if (!ref) {
+      const handleIdx = line.indexOf("@");
+      if (handleIdx !== -1) {
+        const m = line.slice(handleIdx).match(/^@([\w.-]+)/);
+        if (m) { ref = "@" + m[1]; refType = "handle"; }
+      }
+    }
+    if (!ref || seenInFile.has(ref) || existingIds.has(ref)) continue;
+    seenInFile.add(ref);
 
     const lower = line.toLowerCase();
     const status = lower.includes("black") || lower.includes("чорн") ? "black"
@@ -167,9 +204,8 @@ function parseSheetRows(csvText) {
 
     out.push({ ref, refType, status });
   }
-  // дедуп в межах самого файлу
-  const seen = new Set();
-  return out.filter((r) => (seen.has(r.ref) ? false : (seen.add(r.ref), true)));
+
+  return { candidates: out, totalScanned };
 }
 
 async function resolveHandle(handle, apiKey, budget) {
@@ -183,6 +219,7 @@ async function resolveHandle(handle, apiKey, budget) {
 
 async function fetchChannelsBasics(ids, apiKey, budget) {
   const out = [];
+  const apiErrors = [];
   for (let i = 0; i < ids.length; i += 50) {
     if (budget.used >= budget.limit) break;
     const chunk = ids.slice(i, i + 50);
@@ -191,6 +228,10 @@ async function fetchChannelsBasics(ids, apiKey, budget) {
     );
     if (!res) break;
     const data = await res.json();
+    if (data.error) {
+      apiErrors.push({ status: data.error.code, message: data.error.message });
+      continue;
+    }
     for (const item of data.items || []) {
       out.push({
         id: item.id,
@@ -203,7 +244,7 @@ async function fetchChannelsBasics(ids, apiKey, budget) {
       });
     }
   }
-  return out;
+  return { basics: out, apiErrors };
 }
 
 function guessType(title = "", description = "") {
