@@ -52,11 +52,18 @@ tbody tr.sel{background:var(--accent-soft)}
 .cname a:hover{color:var(--accent);text-decoration:underline}
 .cid{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
 .tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:5px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2)}
-.stars{cursor:pointer;font-size:13px}
-.s-hi{color:var(--good)} .s-mid{color:var(--warn)} .s-lo{color:var(--bad)}
-.stars .off{color:var(--line)}
-.status{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid;cursor:pointer;font-weight:600;background:none;font-family:inherit}
-.st-w{color:var(--good);border-color:var(--good)} .st-b{color:var(--bad);border-color:var(--bad)} .st-n{color:var(--ink-3);border-color:var(--line)}
+.stars{white-space:nowrap;font-size:14px;letter-spacing:1px}
+.star{cursor:pointer;padding:0 1px;display:inline-block;transition:transform .08s}
+.star:hover{transform:scale(1.2)}
+.star.s-hi{color:var(--good)} .star.s-mid{color:var(--warn)} .star.s-lo{color:var(--bad)}
+.star.off{color:var(--line)}
+.statusSelect{font-size:11px;padding:3px 22px 3px 9px;border-radius:20px;border:1px solid;cursor:pointer;font-weight:600;font-family:inherit;
+  background-color:var(--panel);-webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='%23908d85' d='M2 4l4 4 4-4z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 6px center;background-size:10px}
+.statusSelect.st-white{color:var(--good);border-color:var(--good)}
+.statusSelect.st-black{color:var(--bad);border-color:var(--bad)}
+.statusSelect.st-n{color:var(--ink-3);border-color:var(--line)}
 input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .empty,.loading{padding:44px;text-align:center;color:var(--ink-3)}
 .foot{margin-top:14px;font-size:11.5px;color:var(--ink-3)}
@@ -194,13 +201,17 @@ function filtered(){
 
 function starsHtml(n){
   const cls=n>=4?'s-hi':n===3?'s-mid':'s-lo';
-  let s='';for(let i=1;i<=5;i++)s+=i<=n?`<span class="${cls}">★</span>`:'<span class="off">★</span>';
-  return s;
+  let s='<span class="stars">';
+  for(let i=1;i<=5;i++){
+    s+=`<span class="star ${i<=n?cls:'off'}" data-v="${i}" title="Оцінка ${i}">★</span>`;
+  }
+  return s+'</span>';
 }
 function statusHtml(s){
-  if(s==='white')return '<button class="status st-w">whitelist</button>';
-  if(s==='black')return '<button class="status st-b">blacklist</button>';
-  return '<button class="status st-n">— додати</button>';
+  const opt=(v,label)=>`<option value="${v}" ${s===v?'selected':''}>${label}</option>`;
+  return `<select class="statusSelect st-${s||'n'}">`+
+    opt('','— немає')+opt('white','whitelist')+opt('black','blacklist')+
+  '</select>';
 }
 function avatar(name,i){
   const c=PALETTE[i%PALETTE.length];
@@ -223,7 +234,7 @@ function render(){
       <td class="num">${fmt(d.subscribers)}</td>
       <td class="num">${fmt(d.avg_views_month)}</td>
       <td class="num">${d.videos_month||0}</td>
-      <td><span class="stars">${starsHtml(d.quality)}</span></td>
+      <td>${starsHtml(d.quality)}</td>
       <td>${statusHtml(d.status)}</td>
     </tr>`).join('');
   $('#empty').style.display=rows.length?'none':'block';
@@ -270,9 +281,22 @@ $('#tb').addEventListener('click',e=>{
   const d=DATA.find(x=>x.id===tr.dataset.id);
   if(e.target.closest('.cname a')) return;
   if(e.target.matches('input[type=checkbox]')){ sel.has(d.id)?sel.delete(d.id):sel.add(d.id); return render(); }
-  if(e.target.closest('.stars')){ d.quality=d.quality>=5?1:d.quality+1; render(); return patchChannel(d.id,{quality:d.quality}); }
-  if(e.target.closest('.status')){ d.status=d.status===''?'white':d.status==='white'?'black':''; render(); return patchChannel(d.id,{status:d.status}); }
+  const star=e.target.closest('.star');
+  if(star){
+    const v=+star.dataset.v;
+    if(v!==d.quality){ d.quality=v; render(); patchChannel(d.id,{quality:v}); }
+    return;
+  }
+  if(e.target.matches('select.statusSelect')) return; // обробляється в change, не в click
   sel.has(d.id)?sel.delete(d.id):sel.add(d.id); render();
+});
+
+$('#tb').addEventListener('change',e=>{
+  if(!e.target.matches('select.statusSelect')) return;
+  const tr=e.target.closest('tr'); if(!tr) return;
+  const d=DATA.find(x=>x.id===tr.dataset.id);
+  const v=e.target.value;
+  if(v!==d.status){ d.status=v; render(); patchChannel(d.id,{status:v}); }
 });
 
 $('#chAll').addEventListener('change',e=>{
