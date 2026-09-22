@@ -11,4 +11,4 @@ crons = ["0 3 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "ytplacements"
-database_id = "PASTE_DATABASE_ID_HERE"
+database_id = "706aaf0e-1919-4862-8f64-166790f09f3d"
